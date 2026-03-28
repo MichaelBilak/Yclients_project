@@ -1,0 +1,10 @@
+[Unit]
+Description=Run YClients BI nightly full sync at 02:00
+
+[Timer]
+OnCalendar=*-*-* 02:00:00
+Persistent=true
+Unit=yclients-sync-full@%i.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,613 @@
+"""
+Создание аналитических представлений (views) в PostgreSQL.
+Эти views используются BI-инструментами (Metabase и др.) для построения дашбордов.
+"""
+from sqlalchemy import text
+from config import DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD
+from database import init_database
+
+VIEWS = [
+    # ----------------------------------------------------------------
+    # 1. Выручка по дням
+    # ----------------------------------------------------------------
+    """
+    CREATE OR REPLACE VIEW v_revenue_daily AS
+    SELECT
+        a.date                                          AS visit_date,
+        COUNT(DISTINCT a.id)                            AS appointments_count,
+        COALESCE(SUM(t.cost * t.amount), 0)             AS revenue,
+        COALESCE(SUM(t.first_cost * t.amount), 0)       AS revenue_before_discount,
+        COUNT(DISTINCT a.client_id)                     AS unique_clients
+    FROM appointments a
+    LEFT JOIN transactions t ON t.appointment_id = a.id
+    WHERE a.attendance > 0
+    GROUP BY a.date
+    ORDER BY a.date ASC
+    """,
+
+    # ----------------------------------------------------------------
+    # 2. Выручка по сотрудникам
+    # ----------------------------------------------------------------
+    """
+    CREATE OR REPLACE VIEW v_revenue_by_staff AS
+    SELECT
+        s.id                                            AS staff_id,
+        s.name                                          AS staff_name,
+        s.position                                      AS staff_position,
+        COUNT(DISTINCT a.id)                            AS appointments_count,
+        COUNT(DISTINCT a.client_id)                     AS unique_clients,
+        COALESCE(SUM(t.cost * t.amount), 0)             AS revenue
+    FROM staff s
+    LEFT JOIN appointments a ON a.staff_id = s.id AND a.attendance > 0
+    LEFT JOIN transactions t ON t.appointment_id = a.id
+    GROUP BY s.id, s.name, s.position
+    ORDER BY revenue DESC
+    """,
+
+    # ----------------------------------------------------------------
+    # 3. Популярные услуги (по количеству и выручке)
+    # ----------------------------------------------------------------
+    """
+    CREATE OR REPLACE VIEW v_popular_services AS
+    SELECT
+        t.service_id,
+        t.service_title,
+        SUM(t.amount)                                   AS total_sold,
+        COALESCE(SUM(t.cost * t.amount), 0)             AS total_revenue,
+        ROUND(AVG(t.cost)::numeric, 2)                  AS avg_price
+    FROM transactions t
+    GROUP BY t.service_id, t.service_title
+    ORDER BY total_sold DESC
+    """,
+
+    # ----------------------------------------------------------------
+    # 4. Загрузка сотрудников (часы работы)
+    # ----------------------------------------------------------------
+    """
+    CREATE OR REPLACE VIEW v_staff_workload AS
+    SELECT
+        s.id                                            AS staff_id,
+        s.name                                          AS staff_name,
+        a.date                                          AS work_date,
+        COUNT(a.id)                                     AS appointments_count,
+        COALESCE(SUM(a.seance_length), 0) / 3600.0      AS hours_booked
+    FROM staff s
+    JOIN appointments a ON a.staff_id = s.id
+    GROUP BY s.id, s.name, a.date
+    ORDER BY a.date ASC, hours_booked DESC
+    """,
+
+    # ----------------------------------------------------------------
+    # 5. Клиентская аналитика
+    # ----------------------------------------------------------------
+    """
+    CREATE OR REPLACE VIEW v_client_analytics AS
+    SELECT
+        c.id                                            AS client_id,
+        c.name                                          AS client_name,
+        c.phone,
+        c.visits_count,
+        c.last_visit_date,
+        c.discount,
+        COUNT(DISTINCT a.id)                            AS total_appointments,
+        COALESCE(SUM(t.cost * t.amount), 0)             AS total_spent,
+        CASE
+            WHEN COUNT(DISTINCT a.id) >= 10 THEN 'VIP'
+            WHEN COUNT(DISTINCT a.id) >= 5  THEN 'Постоянный'
+            WHEN COUNT(DISTINCT a.id) >= 2  THEN 'Повторный'
+            ELSE 'Новый'
+        END                                             AS client_segment
+    FROM clients c
+    LEFT JOIN appointments a ON a.client_id = c.id AND a.attendance > 0
+    LEFT JOIN transactions t ON t.appointment_id = a.id
+    GROUP BY c.id, c.name, c.phone, c.visits_count, c.last_visit_date, c.discount
+    ORDER BY total_spent DESC
+    """,
+
+    # ----------------------------------------------------------------
+    # 6. Выручка по месяцам
+    # ----------------------------------------------------------------
+    """
+    CREATE OR REPLACE VIEW v_revenue_monthly AS
+    SELECT
+        SUBSTRING(a.date FROM 1 FOR 7)                  AS month,
+        COUNT(DISTINCT a.id)                            AS appointments_count,
+        COUNT(DISTINCT a.client_id)                     AS unique_clients,
+        COALESCE(SUM(t.cost * t.amount), 0)             AS revenue
+    FROM appointments a
+    LEFT JOIN transactions t ON t.appointment_id = a.id
+    WHERE a.attendance > 0
+    GROUP BY SUBSTRING(a.date FROM 1 FOR 7)
+    ORDER BY month ASC
+    """,
+
+    # ----------------------------------------------------------------
+    # 7. Конверсия записей (пришёл / не пришёл)
+    # ----------------------------------------------------------------
+    """
+    CREATE OR REPLACE VIEW v_attendance_stats AS
+    SELECT
+        a.date                                          AS visit_date,
+        COUNT(*)                                        AS total_records,
+        COUNT(*) FILTER (WHERE a.attendance > 0)        AS attended,
+        COUNT(*) FILTER (WHERE a.attendance = -1)       AS no_show,
+        COUNT(*) FILTER (WHERE a.attendance = 0)        AS pending,
+        ROUND(
+            100.0 * COUNT(*) FILTER (WHERE a.attendance > 0) / NULLIF(COUNT(*), 0),
+            1
+        )                                               AS attendance_rate_pct
+    FROM appointments a
+    GROUP BY a.date
+    ORDER BY a.date ASC
+    """,
+
+    # ----------------------------------------------------------------
+    # 8. Финансовый поток по дням (из financial_transactions)
+    # ----------------------------------------------------------------
+    """
+    CREATE OR REPLACE VIEW v_finance_daily AS
+    SELECT
+        SUBSTRING(ft.date FROM 1 FOR 10)                AS tx_date,
+        COUNT(*)                                        AS transactions_count,
+        COALESCE(SUM(CASE WHEN ft.amount > 0 THEN ft.amount ELSE 0 END), 0) AS income,
+        COALESCE(SUM(CASE WHEN ft.amount < 0 THEN ABS(ft.amount) ELSE 0 END), 0) AS expense,
+        COALESCE(SUM(ft.amount), 0)                     AS net_flow
+    FROM financial_transactions ft
+    GROUP BY SUBSTRING(ft.date FROM 1 FOR 10)
+    ORDER BY tx_date ASC
+    """,
+
+    # ----------------------------------------------------------------
+    # 9. Финансы по кассам
+    # ----------------------------------------------------------------
+    """
+    CREATE OR REPLACE VIEW v_finance_by_account AS
+    SELECT
+        acc.id                                          AS account_id,
+        acc.title                                       AS account_name,
+        acc.type                                        AS account_type,
+        COUNT(ft.id)                                    AS transactions_count,
+        COALESCE(SUM(CASE WHEN ft.amount > 0 THEN ft.amount ELSE 0 END), 0) AS total_income,
+        COALESCE(SUM(CASE WHEN ft.amount < 0 THEN ABS(ft.amount) ELSE 0 END), 0) AS total_expense,
+        COALESCE(SUM(ft.amount), 0)                     AS balance
+    FROM accounts acc
+    LEFT JOIN financial_transactions ft ON ft.account_id = acc.id
+    GROUP BY acc.id, acc.title, acc.type
+    ORDER BY total_income DESC
+    """,
+
+    # ----------------------------------------------------------------
+    # 10. Финансы по месяцам
+    # ----------------------------------------------------------------
+    """
+    CREATE OR REPLACE VIEW v_finance_monthly AS
+    SELECT
+        SUBSTRING(ft.date FROM 1 FOR 7)                 AS month,
+        COUNT(*)                                        AS transactions_count,
+        COALESCE(SUM(CASE WHEN ft.amount > 0 THEN ft.amount ELSE 0 END), 0) AS income,
+        COALESCE(SUM(CASE WHEN ft.amount < 0 THEN ABS(ft.amount) ELSE 0 END), 0) AS expense,
+        COALESCE(SUM(ft.amount), 0)                     AS net_flow
+    FROM financial_transactions ft
+    GROUP BY SUBSTRING(ft.date FROM 1 FOR 7)
+    ORDER BY month ASC
+    """,
+
+    # ----------------------------------------------------------------
+    # 11. Продажи товаров (из goods_transactions)
+    # ----------------------------------------------------------------
+    """
+    CREATE OR REPLACE VIEW v_goods_sales AS
+    SELECT
+        g.good_id,
+        g.title                                         AS good_title,
+        g.cost                                          AS list_price,
+        COUNT(gt.id)                                    AS total_transactions,
+        COALESCE(SUM(gt.amount), 0)                     AS total_qty_sold,
+        COALESCE(SUM(gt.cost), 0)                       AS total_revenue,
+        ROUND(AVG(gt.cost_per_unit)::numeric, 2)        AS avg_sell_price
+    FROM goods g
+    LEFT JOIN goods_transactions gt ON gt.good_id = g.good_id
+    GROUP BY g.good_id, g.title, g.cost
+    ORDER BY total_revenue DESC
+    """,
+
+    # ----------------------------------------------------------------
+    # 12. Движение товаров по складам
+    # ----------------------------------------------------------------
+    """
+    CREATE OR REPLACE VIEW v_goods_movement AS
+    SELECT
+        st.id                                           AS storage_id,
+        st.title                                        AS storage_name,
+        COUNT(gt.id)                                    AS transactions_count,
+        COALESCE(SUM(gt.amount), 0)                     AS total_units,
+        COALESCE(SUM(gt.cost), 0)                       AS total_cost
+    FROM storages st
+    LEFT JOIN goods_transactions gt ON gt.storage_id = st.id
+    GROUP BY st.id, st.title
+    ORDER BY total_cost DESC
+    """,
+
+    # ----------------------------------------------------------------
+    # 13. Рейтинг сотрудников по отзывам
+    # ----------------------------------------------------------------
+    """
+    CREATE OR REPLACE VIEW v_staff_reviews AS
+    SELECT
+        s.id                                            AS staff_id,
+        s.name                                          AS staff_name,
+        COUNT(c.id)                                     AS reviews_count,
+        ROUND(AVG(c.rating)::numeric, 2)                AS avg_rating,
+        MIN(c.rating)                                   AS min_rating,
+        MAX(c.rating)                                   AS max_rating
+    FROM staff s
+    LEFT JOIN comments c ON c.master_id = s.id AND c.rating IS NOT NULL
+    GROUP BY s.id, s.name
+    ORDER BY avg_rating DESC NULLS LAST
+    """,
+
+    # ----------------------------------------------------------------
+    # 14. Отзывы по месяцам
+    # ----------------------------------------------------------------
+    """
+    CREATE OR REPLACE VIEW v_reviews_monthly AS
+    SELECT
+        SUBSTRING(c.date FROM 1 FOR 7)                  AS month,
+        COUNT(*)                                        AS reviews_count,
+        ROUND(AVG(c.rating)::numeric, 2)                AS avg_rating,
+        COUNT(*) FILTER (WHERE c.rating >= 4)           AS positive,
+        COUNT(*) FILTER (WHERE c.rating <= 2)           AS negative
+    FROM comments c
+    WHERE c.rating IS NOT NULL
+    GROUP BY SUBSTRING(c.date FROM 1 FOR 7)
+    ORDER BY month ASC
+    """,
+
+    # ----------------------------------------------------------------
+    # 15. Загрузка расписания (заполненность слотов)
+    # ----------------------------------------------------------------
+    """
+    CREATE OR REPLACE VIEW v_schedule_utilization AS
+    SELECT
+        ss.staff_id,
+        s.name                                          AS staff_name,
+        ss.date,
+        COUNT(ss.id)                                    AS schedule_slots,
+        COUNT(DISTINCT a.id)                            AS booked_appointments
+    FROM staff_schedules ss
+    JOIN staff s ON s.id = ss.staff_id
+    LEFT JOIN appointments a ON a.staff_id = ss.staff_id AND a.date = ss.date
+    GROUP BY ss.staff_id, s.name, ss.date
+    ORDER BY ss.date ASC
+    """,
+
+    # ----------------------------------------------------------------
+    # 16. Справочник филиалов для фильтров
+    # ----------------------------------------------------------------
+    """
+    CREATE OR REPLACE VIEW v_companies_lookup AS
+    SELECT
+        c.id                                            AS company_id,
+        c.title                                         AS company_name,
+        g.id                                            AS group_id,
+        g.title                                         AS group_name,
+        c.title || ' (' || c.id || ')'                  AS company_label
+    FROM companies c
+    LEFT JOIN groups g ON g.id = c.group_id
+    ORDER BY c.title ASC, c.id ASC
+    """,
+
+    # ----------------------------------------------------------------
+    # 17. Справочник услуг для фильтров
+    # ----------------------------------------------------------------
+    """
+    CREATE OR REPLACE VIEW v_services_lookup AS
+    SELECT
+        s.id                                            AS service_id,
+        s.title                                         AS service_name,
+        s.category_title                                AS service_category,
+        s.company_id,
+        c.title                                         AS company_name,
+        s.title || ' — ' || c.title                     AS service_label
+    FROM services s
+    LEFT JOIN companies c ON c.id = s.company_id
+    ORDER BY s.title ASC, c.title ASC
+    """,
+
+    # ----------------------------------------------------------------
+    # 18. Календарь для BI-фильтров
+    # ----------------------------------------------------------------
+    """
+    CREATE OR REPLACE VIEW v_calendar AS
+    WITH bounds AS (
+        SELECT
+            MIN(src.dt)                                 AS min_date,
+            MAX(src.dt)                                 AS max_date
+        FROM (
+            SELECT a.date::date AS dt
+            FROM appointments a
+            WHERE a.date IS NOT NULL
+            UNION ALL
+            SELECT LEFT(ft.date, 10)::date AS dt
+            FROM financial_transactions ft
+            WHERE ft.date IS NOT NULL
+        ) src
+    )
+    SELECT
+        gs.dt::date                                     AS calendar_date,
+        EXTRACT(YEAR FROM gs.dt)::int                   AS year_num,
+        EXTRACT(QUARTER FROM gs.dt)::int                AS quarter_num,
+        CONCAT(EXTRACT(QUARTER FROM gs.dt)::int, ' кв. ', EXTRACT(YEAR FROM gs.dt)::int)
+                                                        AS quarter_label_ru,
+        DATE_TRUNC('quarter', gs.dt)::date              AS quarter_start_date,
+        EXTRACT(MONTH FROM gs.dt)::int                  AS month_num,
+        CASE EXTRACT(MONTH FROM gs.dt)::int
+            WHEN 1 THEN 'Январь'
+            WHEN 2 THEN 'Февраль'
+            WHEN 3 THEN 'Март'
+            WHEN 4 THEN 'Апрель'
+            WHEN 5 THEN 'Май'
+            WHEN 6 THEN 'Июнь'
+            WHEN 7 THEN 'Июль'
+            WHEN 8 THEN 'Август'
+            WHEN 9 THEN 'Сентябрь'
+            WHEN 10 THEN 'Октябрь'
+            WHEN 11 THEN 'Ноябрь'
+            ELSE 'Декабрь'
+        END                                             AS month_name_ru,
+        CONCAT(
+            CASE EXTRACT(MONTH FROM gs.dt)::int
+                WHEN 1 THEN 'Январь'
+                WHEN 2 THEN 'Февраль'
+                WHEN 3 THEN 'Март'
+                WHEN 4 THEN 'Апрель'
+                WHEN 5 THEN 'Май'
+                WHEN 6 THEN 'Июнь'
+                WHEN 7 THEN 'Июль'
+                WHEN 8 THEN 'Август'
+                WHEN 9 THEN 'Сентябрь'
+                WHEN 10 THEN 'Октябрь'
+                WHEN 11 THEN 'Ноябрь'
+                ELSE 'Декабрь'
+            END,
+            ' ',
+            EXTRACT(YEAR FROM gs.dt)::int
+        )                                               AS month_label_ru,
+        TO_CHAR(gs.dt, 'YYYY-MM')                       AS month_key,
+        DATE_TRUNC('month', gs.dt)::date                AS month_start_date,
+        EXTRACT(WEEK FROM gs.dt)::int                   AS week_num,
+        EXTRACT(ISOYEAR FROM gs.dt)::int                AS iso_year_num,
+        CONCAT('Неделя ', TO_CHAR(gs.dt, 'IW'), ' ', EXTRACT(ISOYEAR FROM gs.dt)::int)
+                                                        AS iso_week_label_ru,
+        DATE_TRUNC('week', gs.dt)::date                 AS week_start_date,
+        EXTRACT(ISODOW FROM gs.dt)::int                 AS iso_weekday_num,
+        CASE EXTRACT(ISODOW FROM gs.dt)::int
+            WHEN 1 THEN 'Понедельник'
+            WHEN 2 THEN 'Вторник'
+            WHEN 3 THEN 'Среда'
+            WHEN 4 THEN 'Четверг'
+            WHEN 5 THEN 'Пятница'
+            WHEN 6 THEN 'Суббота'
+            ELSE 'Воскресенье'
+        END                                             AS weekday_name_ru,
+        TO_CHAR(gs.dt, 'YYYY-MM-DD')                    AS date_key
+    FROM bounds b
+    CROSS JOIN LATERAL generate_series(b.min_date, b.max_date, INTERVAL '1 day') AS gs(dt)
+    ORDER BY gs.dt ASC
+    """,
+
+    # ----------------------------------------------------------------
+    # 19. Обогащённая витрина записей и услуг
+    # ----------------------------------------------------------------
+    """
+    CREATE OR REPLACE VIEW v_appointments_enriched AS
+    SELECT
+        a.id                                            AS appointment_id,
+        a.date::date                                    AS visit_date,
+        cal.year_num,
+        cal.quarter_num,
+        cal.quarter_label_ru,
+        cal.month_num,
+        cal.month_name_ru,
+        cal.month_label_ru,
+        cal.month_key,
+        cal.week_num,
+        cal.iso_year_num,
+        cal.iso_week_label_ru,
+        cal.week_start_date,
+        a.company_id,
+        c.title                                         AS company_name,
+        c.title || ' (' || a.company_id || ')'          AS company_label,
+        a.staff_id,
+        s.name                                          AS staff_name,
+        a.client_id,
+        cl.name                                         AS client_name,
+        a.attendance,
+        CASE
+            WHEN a.attendance > 0 THEN 'Пришел'
+            WHEN a.attendance = 0 THEN 'Ожидается'
+            WHEN a.attendance = -1 THEN 'Не пришел'
+            ELSE 'Другое'
+        END                                             AS attendance_label,
+        t.service_id,
+        COALESCE(NULLIF(t.service_title, ''), svc.title) AS service_title,
+        svc.category_title                              AS service_category,
+        t.amount                                        AS service_qty,
+        t.cost                                          AS service_cost,
+        t.first_cost                                    AS service_first_cost,
+        COALESCE(t.cost * t.amount, 0)                  AS service_revenue
+    FROM appointments a
+    LEFT JOIN transactions t ON t.appointment_id = a.id
+    LEFT JOIN services svc ON svc.id = t.service_id
+    LEFT JOIN companies c ON c.id = a.company_id
+    LEFT JOIN staff s ON s.id = a.staff_id
+    LEFT JOIN clients cl ON cl.id = a.client_id
+    LEFT JOIN v_calendar cal ON cal.calendar_date = a.date::date
+    ORDER BY a.date::date ASC, a.id ASC
+    """,
+
+    # ----------------------------------------------------------------
+    # 20. Обогащённая витрина финансовых транзакций
+    # ----------------------------------------------------------------
+    """
+    CREATE OR REPLACE VIEW v_financial_transactions_enriched AS
+    SELECT
+        ft.id                                           AS transaction_id,
+        LEFT(ft.date, 10)::date                         AS tx_date,
+        cal.year_num,
+        cal.quarter_num,
+        cal.quarter_label_ru,
+        cal.month_num,
+        cal.month_name_ru,
+        cal.month_label_ru,
+        cal.month_key,
+        cal.week_num,
+        cal.iso_year_num,
+        cal.iso_week_label_ru,
+        cal.week_start_date,
+        ft.company_id,
+        c.title                                         AS company_name,
+        c.title || ' (' || ft.company_id || ')'         AS company_label,
+        ft.account_id,
+        acc.title                                       AS account_name,
+        ft.client_id,
+        cl.name                                         AS client_name,
+        ft.master_id,
+        s.name                                          AS staff_name,
+        ft.record_id,
+        ft.sold_item_id,
+        ft.sold_item_type,
+        CASE
+            WHEN ft.sold_item_type = 'service' THEN 'Услуга'
+            WHEN ft.sold_item_type = 'goods_transaction' THEN 'Товар'
+            ELSE COALESCE(ft.sold_item_type, 'Не указано')
+        END                                             AS sold_item_type_label,
+        CASE
+            WHEN ft.amount > 0 THEN 'Приход'
+            WHEN ft.amount < 0 THEN 'Расход'
+            ELSE 'Ноль'
+        END                                             AS flow_direction,
+        ft.amount,
+        ft.comment
+    FROM financial_transactions ft
+    LEFT JOIN companies c ON c.id = ft.company_id
+    LEFT JOIN accounts acc ON acc.id = ft.account_id
+    LEFT JOIN clients cl ON cl.id = ft.client_id
+    LEFT JOIN staff s ON s.id = ft.master_id
+    LEFT JOIN v_calendar cal ON cal.calendar_date = LEFT(ft.date, 10)::date
+    ORDER BY LEFT(ft.date, 10)::date ASC, ft.id ASC
+    """,
+
+    # ----------------------------------------------------------------
+    # 21. Обогащённая витрина товарных транзакций
+    # ----------------------------------------------------------------
+    """
+    CREATE OR REPLACE VIEW v_goods_transactions_enriched AS
+    SELECT
+        gt.id                                           AS goods_transaction_id,
+        gt.company_id,
+        c.title                                         AS company_name,
+        c.title || ' (' || gt.company_id || ')'         AS company_label,
+        gt.good_id,
+        g.title                                         AS good_title,
+        gt.storage_id,
+        st.title                                        AS storage_name,
+        gt.client_id,
+        cl.name                                         AS client_name,
+        gt.master_id,
+        s.name                                          AS staff_name,
+        gt.type_id,
+        CASE
+            WHEN gt.type_id = 1 THEN 'Продажа'
+            WHEN gt.type_id = 3 THEN 'Поступление'
+            WHEN gt.type_id = 4 THEN 'Списание'
+            ELSE 'Другое'
+        END                                             AS operation_type_label,
+        gt.amount,
+        gt.cost_per_unit,
+        gt.cost,
+        gt.discount
+    FROM goods_transactions gt
+    LEFT JOIN companies c ON c.id = gt.company_id
+    LEFT JOIN goods g ON g.good_id = gt.good_id
+    LEFT JOIN storages st ON st.id = gt.storage_id
+    LEFT JOIN clients cl ON cl.id = gt.client_id
+    LEFT JOIN staff s ON s.id = gt.master_id
+    ORDER BY gt.id ASC
+    """,
+]
+
+LEGACY_VIEWS = [
+    "v_loyalty_summary",
+    "v_certificates_stats",
+]
+
+
+def refresh_analytics_views(verbose: bool = True):
+    if verbose:
+        print("Создание аналитических представлений в PostgreSQL...")
+    database = init_database(DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD)
+
+    if not database.test_connection():
+        return {'success': False, 'created_count': 0, 'failed_views': ['connection']}
+
+    created_count = 0
+    failed_views = []
+
+    with database.engine.connect() as conn:
+        for view_name in LEGACY_VIEWS:
+            conn.execute(text(f"DROP VIEW IF EXISTS {view_name}"))
+        conn.commit()
+
+        for i, view_sql in enumerate(VIEWS, 1):
+            try:
+                conn.execute(text(view_sql))
+                conn.commit()
+                if verbose:
+                    print(f"  ✓ View {i}/{len(VIEWS)} создан")
+                created_count += 1
+            except Exception as e:
+                if verbose:
+                    print(f"  ✗ Ошибка при создании view {i}: {e}")
+                conn.rollback()
+                failed_views.append(i)
+
+    if verbose:
+        print(f"\n✓ Успешно создано {created_count} из {len(VIEWS)} аналитических представлений:")
+        print("  - v_revenue_daily            — выручка по дням")
+        print("  - v_revenue_by_staff         — выручка по сотрудникам")
+        print("  - v_popular_services         — популярные услуги")
+        print("  - v_staff_workload           — загрузка сотрудников")
+        print("  - v_client_analytics         — клиентская аналитика и сегментация")
+        print("  - v_revenue_monthly          — выручка по месяцам")
+        print("  - v_attendance_stats         — конверсия записей (посещаемость)")
+        print("  - v_finance_daily            — финансовый поток по дням")
+        print("  - v_finance_by_account       — финансы по кассам")
+        print("  - v_finance_monthly          — финансы по месяцам")
+        print("  - v_goods_sales              — продажи товаров")
+        print("  - v_goods_movement           — движение товаров по складам")
+        print("  - v_staff_reviews            — рейтинг сотрудников по отзывам")
+        print("  - v_reviews_monthly          — отзывы по месяцам")
+        print("  - v_schedule_utilization     — загрузка расписания")
+        print("  - v_companies_lookup         — справочник филиалов")
+        print("  - v_services_lookup          — справочник услуг")
+        print("  - v_calendar                 — BI-календарь: месяцы, недели, кварталы")
+        print("  - v_appointments_enriched    — записи с человекочитаемыми полями")
+        print("  - v_financial_transactions_enriched — финансы с календарём и названиями")
+        print("  - v_goods_transactions_enriched     — товары с названиями операций")
+        if failed_views:
+            print(f"\n✗ Ошибки были в view: {', '.join(map(str, failed_views))}")
+
+    return {
+        'success': not failed_views,
+        'created_count': created_count,
+        'failed_views': failed_views,
+    }
+
+
+def main():
+    refresh_analytics_views(verbose=True)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,10 @@
+[Unit]
+Description=YClients BI nightly full sync
+After=network.target docker.service
+Wants=network.target
+
+[Service]
+Type=oneshot
+User=%i
+WorkingDirectory=/opt/yclients_bi_system
+ExecStart=/opt/yclients_bi_system/sync.sh full scheduled systemd
