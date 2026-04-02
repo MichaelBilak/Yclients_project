@@ -16,7 +16,7 @@ from setup_analytics import refresh_analytics_views
 from sync_control import SyncControlService
 from sync_logging import build_log_path, stream_run_output
 from sync_notifier import TelegramNotifier, build_sync_message
-from test import execute_sync
+from sync_pipeline import execute_sync
 
 
 def run_sync_job(mode: str, trigger_type: str, initiator: str = 'system') -> dict:
@@ -95,7 +95,7 @@ def run_sync_job(mode: str, trigger_type: str, initiator: str = 'system') -> dic
             'log_path': log_path,
         })
     finally:
-        finished_at = datetime.now().isoformat()
+        finished_at = datetime.now()
         message = build_sync_message(
             mode=normalized_mode,
             trigger_type=normalized_trigger,

@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Optional
 
 import requests
@@ -43,13 +44,20 @@ def build_sync_message(
     warning_count: int = 0,
     error_message: Optional[str] = None,
 ) -> str:
+    def _fmt(value: str | datetime | None) -> str:
+        if value is None:
+            return '-'
+        if isinstance(value, datetime):
+            return value.isoformat()
+        return value
+
     lines = [
         'YClients BI sync',
         f'Режим: {mode}',
         f'Триггер: {trigger_type}',
         f'Статус: {status}',
-        f'Старт: {started_at}',
-        f'Завершение: {finished_at}',
+        f'Старт: {_fmt(started_at)}',
+        f'Завершение: {_fmt(finished_at)}',
         f'Warnings: {warning_count}',
         f'Лог: {log_path}',
     ]

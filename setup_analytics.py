@@ -110,14 +110,14 @@ VIEWS = [
     """
     CREATE OR REPLACE VIEW v_revenue_monthly AS
     SELECT
-        SUBSTRING(a.date FROM 1 FOR 7)                  AS month,
+        TO_CHAR(a.date, 'YYYY-MM')                      AS month,
         COUNT(DISTINCT a.id)                            AS appointments_count,
         COUNT(DISTINCT a.client_id)                     AS unique_clients,
         COALESCE(SUM(t.cost * t.amount), 0)             AS revenue
     FROM appointments a
     LEFT JOIN transactions t ON t.appointment_id = a.id
     WHERE a.attendance > 0
-    GROUP BY SUBSTRING(a.date FROM 1 FOR 7)
+    GROUP BY TO_CHAR(a.date, 'YYYY-MM')
     ORDER BY month ASC
     """,
 
@@ -147,13 +147,13 @@ VIEWS = [
     """
     CREATE OR REPLACE VIEW v_finance_daily AS
     SELECT
-        SUBSTRING(ft.date FROM 1 FOR 10)                AS tx_date,
+        ft.date::date                                   AS tx_date,
         COUNT(*)                                        AS transactions_count,
         COALESCE(SUM(CASE WHEN ft.amount > 0 THEN ft.amount ELSE 0 END), 0) AS income,
         COALESCE(SUM(CASE WHEN ft.amount < 0 THEN ABS(ft.amount) ELSE 0 END), 0) AS expense,
         COALESCE(SUM(ft.amount), 0)                     AS net_flow
     FROM financial_transactions ft
-    GROUP BY SUBSTRING(ft.date FROM 1 FOR 10)
+    GROUP BY ft.date::date
     ORDER BY tx_date ASC
     """,
 
@@ -182,13 +182,13 @@ VIEWS = [
     """
     CREATE OR REPLACE VIEW v_finance_monthly AS
     SELECT
-        SUBSTRING(ft.date FROM 1 FOR 7)                 AS month,
+        TO_CHAR(ft.date, 'YYYY-MM')                     AS month,
         COUNT(*)                                        AS transactions_count,
         COALESCE(SUM(CASE WHEN ft.amount > 0 THEN ft.amount ELSE 0 END), 0) AS income,
         COALESCE(SUM(CASE WHEN ft.amount < 0 THEN ABS(ft.amount) ELSE 0 END), 0) AS expense,
         COALESCE(SUM(ft.amount), 0)                     AS net_flow
     FROM financial_transactions ft
-    GROUP BY SUBSTRING(ft.date FROM 1 FOR 7)
+    GROUP BY TO_CHAR(ft.date, 'YYYY-MM')
     ORDER BY month ASC
     """,
 
@@ -252,14 +252,14 @@ VIEWS = [
     """
     CREATE OR REPLACE VIEW v_reviews_monthly AS
     SELECT
-        SUBSTRING(c.date FROM 1 FOR 7)                  AS month,
+        TO_CHAR(c.date, 'YYYY-MM')                      AS month,
         COUNT(*)                                        AS reviews_count,
         ROUND(AVG(c.rating)::numeric, 2)                AS avg_rating,
         COUNT(*) FILTER (WHERE c.rating >= 4)           AS positive,
         COUNT(*) FILTER (WHERE c.rating <= 2)           AS negative
     FROM comments c
     WHERE c.rating IS NOT NULL
-    GROUP BY SUBSTRING(c.date FROM 1 FOR 7)
+    GROUP BY TO_CHAR(c.date, 'YYYY-MM')
     ORDER BY month ASC
     """,
 
@@ -328,7 +328,7 @@ VIEWS = [
             FROM appointments a
             WHERE a.date IS NOT NULL
             UNION ALL
-            SELECT LEFT(ft.date, 10)::date AS dt
+            SELECT ft.date::date AS dt
             FROM financial_transactions ft
             WHERE ft.date IS NOT NULL
         ) src
@@ -453,7 +453,7 @@ VIEWS = [
     CREATE OR REPLACE VIEW v_financial_transactions_enriched AS
     SELECT
         ft.id                                           AS transaction_id,
-        LEFT(ft.date, 10)::date                         AS tx_date,
+        ft.date::date                                   AS tx_date,
         cal.year_num,
         cal.quarter_num,
         cal.quarter_label_ru,
@@ -494,8 +494,8 @@ VIEWS = [
     LEFT JOIN accounts acc ON acc.id = ft.account_id
     LEFT JOIN clients cl ON cl.id = ft.client_id
     LEFT JOIN staff s ON s.id = ft.master_id
-    LEFT JOIN v_calendar cal ON cal.calendar_date = LEFT(ft.date, 10)::date
-    ORDER BY LEFT(ft.date, 10)::date ASC, ft.id ASC
+    LEFT JOIN v_calendar cal ON cal.calendar_date = ft.date::date
+    ORDER BY ft.date::date ASC, ft.id ASC
     """,
 
     # ----------------------------------------------------------------

@@ -12,6 +12,14 @@ case "$command" in
     shift
     exec python main.py "$@"
     ;;
+  worker)
+    shift
+    exec python sync_worker.py "$@"
+    ;;
+  migrate)
+    shift
+    exec python migrate.py "$@"
+    ;;
   setup-analytics)
     shift
     exec python setup_analytics.py "$@"

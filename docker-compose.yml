@@ -45,6 +45,16 @@ services:
       timeout: 5s
       retries: 5
 
+  worker:
+    <<: *app-base
+    command: ["worker"]
+    restart: unless-stopped
+
+  migrate:
+    <<: *app-base
+    command: ["migrate"]
+    restart: "no"
+
   sync:
     <<: *app-base
     profiles: ["tools"]

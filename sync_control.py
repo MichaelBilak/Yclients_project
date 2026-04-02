@@ -7,6 +7,14 @@ from config import SYNC_LOCK_ID
 from models import SyncRun, SyncState, SyncStepRun
 
 
+def _serialize_dt(value) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    return value.isoformat()
+
+
 class SyncControlService:
     def __init__(self, lock_id: int = SYNC_LOCK_ID):
         self._lock_id = lock_id
@@ -28,12 +36,12 @@ class SyncControlService:
     def cleanup_stale_runs(self, db) -> None:
         for run in db.query(SyncRun).filter(SyncRun.status == 'running').all():
             run.status = 'abandoned'
-            run.finished_at = datetime.now().isoformat()
+            run.finished_at = datetime.now()
             run.message = 'Run marked as abandoned before a new lock-acquired start'
         db.commit()
 
     def create_run(self, db, mode: str, trigger_type: str, initiator: str, log_path: str) -> SyncRun:
-        now = datetime.now().isoformat()
+        now = datetime.now()
         run = SyncRun(
             mode=mode,
             trigger_type=trigger_type,
@@ -61,7 +69,7 @@ class SyncControlService:
         message: str,
         step_results: list[dict[str, Any]],
     ) -> SyncRun:
-        now = datetime.now().isoformat()
+        now = datetime.now()
         run.status = status
         run.finished_at = now
         run.message = message
@@ -77,7 +85,7 @@ class SyncControlService:
 
     def _replace_step_results(self, db, run_id: int, step_results: list[dict[str, Any]]) -> None:
         db.query(SyncStepRun).filter(SyncStepRun.run_id == run_id).delete()
-        created_at = datetime.now().isoformat()
+        created_at = datetime.now()
         for step in step_results:
             db.add(SyncStepRun(
                 run_id=run_id,
@@ -89,13 +97,13 @@ class SyncControlService:
             ))
         db.commit()
 
-    def set_state(self, db, key: str, value: str) -> None:
+    def set_state(self, db, key: str, value: str | datetime | None) -> None:
         state = db.get(SyncState, key)
         if not state:
             state = SyncState(key=key)
             db.add(state)
-        state.value = value
-        state.updated_at = datetime.now().isoformat()
+        state.value = _serialize_dt(value)
+        state.updated_at = datetime.now()
         db.commit()
 
     def get_latest_run(self, db) -> Optional[SyncRun]:
@@ -128,8 +136,8 @@ class SyncControlService:
             'trigger_type': run.trigger_type,
             'status': run.status,
             'initiator': run.initiator,
-            'started_at': run.started_at,
-            'finished_at': run.finished_at,
+            'started_at': _serialize_dt(run.started_at),
+            'finished_at': _serialize_dt(run.finished_at),
             'log_path': run.log_path,
             'message': run.message,
         }

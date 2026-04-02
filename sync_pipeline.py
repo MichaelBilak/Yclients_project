@@ -1,5 +1,5 @@
 """
-Скрипт для синхронизации данных из YClients API в базу данных
+Production ETL pipeline for syncing YClients data into PostgreSQL.
 """
 import time
 from datetime import date, timedelta, datetime
@@ -22,6 +22,7 @@ from models import (
     AnalyticsOverall, AnalyticsDailyMetric, AnalyticsSourceMetric,
     AnalyticsStatusMetric, ZReport, ZReportPayment, SyncState,
 )
+from sync_parsing import parse_date, parse_datetime, parse_datetime_end, parse_datetime_start, parse_time
 
 TRANSACTIONAL_STATE_KEY = 'transactions_last_success_date'
 
@@ -104,7 +105,7 @@ def set_sync_state_value(db, key: str, value: str):
         state = SyncState(key=key)
         db.add(state)
     state.value = value
-    state.updated_at = datetime.now().isoformat()
+    state.updated_at = datetime.now()
     db.commit()
 
 
@@ -134,6 +135,9 @@ def resolve_sync_window(db, end_date: date, requested_mode: str):
 
 
 def purge_full_refresh_window(db, company_id: int, start_date: str, end_date: str, schedule_end_date: str):
+    start_bound = parse_date(start_date)
+    end_bound = parse_date(end_date)
+    schedule_end_bound = parse_date(schedule_end_date)
     try:
         appointment_ids = [
             row[0]
@@ -141,8 +145,8 @@ def purge_full_refresh_window(db, company_id: int, start_date: str, end_date: st
                 db.query(Appointment.id)
                 .filter(
                     Appointment.company_id == company_id,
-                    Appointment.date >= start_date,
-                    Appointment.date <= end_date,
+                    Appointment.date >= start_bound,
+                    Appointment.date <= end_bound,
                 )
                 .all()
             )
@@ -155,8 +159,8 @@ def purge_full_refresh_window(db, company_id: int, start_date: str, end_date: st
             db.query(Appointment)
             .filter(
                 Appointment.company_id == company_id,
-                Appointment.date >= start_date,
-                Appointment.date <= end_date,
+                Appointment.date >= start_bound,
+                Appointment.date <= end_bound,
             )
             .delete(synchronize_session=False)
         )
@@ -164,8 +168,8 @@ def purge_full_refresh_window(db, company_id: int, start_date: str, end_date: st
             db.query(FinancialTransaction)
             .filter(
                 FinancialTransaction.company_id == company_id,
-                FinancialTransaction.date >= start_date,
-                FinancialTransaction.date <= end_date,
+                FinancialTransaction.date >= parse_datetime_start(start_date),
+                FinancialTransaction.date <= parse_datetime_end(end_date),
             )
             .delete(synchronize_session=False)
         )
@@ -178,8 +182,8 @@ def purge_full_refresh_window(db, company_id: int, start_date: str, end_date: st
             db.query(Comment)
             .filter(
                 Comment.company_id == company_id,
-                Comment.date >= start_date,
-                Comment.date <= end_date,
+                Comment.date >= parse_datetime_start(start_date),
+                Comment.date <= parse_datetime_end(end_date),
             )
             .delete(synchronize_session=False)
         )
@@ -187,8 +191,8 @@ def purge_full_refresh_window(db, company_id: int, start_date: str, end_date: st
             db.query(StaffSchedule)
             .filter(
                 StaffSchedule.company_id == company_id,
-                StaffSchedule.date >= end_date,
-                StaffSchedule.date <= schedule_end_date,
+                StaffSchedule.date >= end_bound,
+                StaffSchedule.date <= schedule_end_bound,
             )
             .delete(synchronize_session=False)
         )
@@ -546,9 +550,9 @@ def sync_clients(api: YClientsAPI, db, company_id: str):
                 obj = Client(
                     id=client_id, name=c.get('name', ''),
                     phone=c.get('phone'), email=c.get('email'),
-                    birth_date=c.get('birth_date'),
+                    birth_date=parse_date(c.get('birth_date')),
                     visits_count=c.get('visits_count', 0),
-                    last_visit_date=c.get('last_visit_date'),
+                    last_visit_date=parse_date(c.get('last_visit_date')),
                     discount=c.get('discount', 0),
                     company_id=cid,
                 )
@@ -557,9 +561,9 @@ def sync_clients(api: YClientsAPI, db, company_id: str):
                 obj.name = c.get('name', '')
                 obj.phone = c.get('phone')
                 obj.email = c.get('email')
-                obj.birth_date = c.get('birth_date')
+                obj.birth_date = parse_date(c.get('birth_date'))
                 obj.visits_count = c.get('visits_count', 0)
-                obj.last_visit_date = c.get('last_visit_date')
+                obj.last_visit_date = parse_date(c.get('last_visit_date'))
                 obj.discount = c.get('discount', 0)
 
         db.commit()
@@ -756,7 +760,7 @@ def sync_goods(api: YClientsAPI, db, company_id: str):
                     barcode=g.get('barcode'),
                     unit_short_title=g.get('unit_short_title'),
                     category_id=g.get('category_id'),
-                    last_change_date=g.get('last_change_date'),
+                    last_change_date=parse_datetime(g.get('last_change_date')),
                     company_id=cid,
                 )
                 db.add(obj)
@@ -767,7 +771,7 @@ def sync_goods(api: YClientsAPI, db, company_id: str):
                 obj.barcode = g.get('barcode')
                 obj.unit_short_title = g.get('unit_short_title')
                 obj.category_id = g.get('category_id')
-                obj.last_change_date = g.get('last_change_date')
+                obj.last_change_date = parse_datetime(g.get('last_change_date'))
 
         db.commit()
         print(f"  ✓ Товары сохранены ({len(goods)} шт.)")
@@ -815,8 +819,9 @@ def sync_records(api: YClientsAPI, db, company_id: str,
                 obj = Appointment(
                     id=record_id, company_id=cid,
                     staff_id=staff_id, client_id=client_id,
-                    date=r.get('date'), datetime=r.get('datetime'),
-                    create_date=r.get('create_date'),
+                    date=parse_date(r.get('date')),
+                    datetime=parse_datetime(r.get('datetime')),
+                    create_date=parse_datetime(r.get('create_date')),
                     seance_length=r.get('seance_length'),
                     attendance=r.get('attendance', 0),
                     comment=r.get('comment'),
@@ -825,9 +830,9 @@ def sync_records(api: YClientsAPI, db, company_id: str,
             else:
                 obj.staff_id = staff_id
                 obj.client_id = client_id
-                obj.date = r.get('date')
-                obj.datetime = r.get('datetime')
-                obj.create_date = r.get('create_date')
+                obj.date = parse_date(r.get('date'))
+                obj.datetime = parse_datetime(r.get('datetime'))
+                obj.create_date = parse_datetime(r.get('create_date'))
                 obj.seance_length = r.get('seance_length')
                 obj.attendance = r.get('attendance', 0)
                 obj.comment = r.get('comment')
@@ -899,7 +904,7 @@ def sync_financial_transactions(api: YClientsAPI, db, company_id: str,
                     id=tid,
                     document_id=t.get('document_id'),
                     expense_id=expense.get('id') if isinstance(expense, dict) else None,
-                    date=t.get('date'),
+                    date=parse_datetime(t.get('date')),
                     amount=t.get('amount'),
                     comment=t.get('comment'),
                     account_id=account.get('id') if isinstance(account, dict) else None,
@@ -916,7 +921,7 @@ def sync_financial_transactions(api: YClientsAPI, db, company_id: str,
             else:
                 obj.document_id = t.get('document_id')
                 obj.expense_id = expense.get('id') if isinstance(expense, dict) else None
-                obj.date = t.get('date')
+                obj.date = parse_datetime(t.get('date'))
                 obj.amount = t.get('amount')
                 obj.comment = t.get('comment')
                 obj.account_id = account.get('id') if isinstance(account, dict) else None
@@ -1048,7 +1053,7 @@ def sync_comments(api: YClientsAPI, db, company_id: str,
                     type=c.get('type'),
                     master_id=c.get('master_id'),
                     text=c.get('text'),
-                    date=c.get('date'),
+                    date=parse_datetime(c.get('date')),
                     rating=c.get('rating'),
                     user_id=c.get('user_id'),
                     user_name=c.get('user_name'),
@@ -1059,6 +1064,7 @@ def sync_comments(api: YClientsAPI, db, company_id: str,
             else:
                 obj.type = c.get('type')
                 obj.text = c.get('text')
+                obj.date = parse_datetime(c.get('date'))
                 obj.rating = c.get('rating')
 
         db.commit()
@@ -1092,9 +1098,9 @@ def sync_staff_schedules(api: YClientsAPI, db, company_id: str,
         cid = int(company_id)
         delete_query = db.query(StaffSchedule).filter(StaffSchedule.company_id == cid)
         if start_date:
-            delete_query = delete_query.filter(StaffSchedule.date >= start_date)
+            delete_query = delete_query.filter(StaffSchedule.date >= parse_date(start_date))
         if end_date:
-            delete_query = delete_query.filter(StaffSchedule.date <= end_date)
+            delete_query = delete_query.filter(StaffSchedule.date <= parse_date(end_date))
         deleted_slots = delete_query.delete(synchronize_session=False)
 
         slot_count = 0
@@ -1105,9 +1111,9 @@ def sync_staff_schedules(api: YClientsAPI, db, company_id: str,
             for slot in slots:
                 obj = StaffSchedule(
                     staff_id=staff_id,
-                    date=schedule_date,
-                    slot_from=slot.get('from'),
-                    slot_to=slot.get('to'),
+                    date=parse_date(schedule_date),
+                    slot_from=parse_time(slot.get('from')),
+                    slot_to=parse_time(slot.get('to')),
                     company_id=cid,
                 )
                 db.add(obj)
@@ -1162,8 +1168,9 @@ def sync_analytics_overall(api: YClientsAPI, db, company_id: str,
                 return None
 
         obj = AnalyticsOverall(
-            date_from=date_from, date_to=date_to,
-            fetched_at=datetime.now().isoformat(),
+            date_from=parse_date(date_from),
+            date_to=parse_date(date_to),
+            fetched_at=datetime.now(),
             income_total=_f(inc_total.get('current_sum')),
             income_total_prev=_f(inc_total.get('previous_sum')),
             income_total_change=_f(inc_total.get('change_percent')),
@@ -1242,7 +1249,7 @@ def sync_analytics_daily_charts(api: YClientsAPI, db, company_id: str,
                     ts_ms, value = point[0], point[1]
                     day_str = datetime.utcfromtimestamp(ts_ms / 1000).strftime('%Y-%m-%d')
                     db.add(AnalyticsDailyMetric(
-                        date=day_str,
+                        date=parse_date(day_str),
                         metric_type=metric_type,
                         label=label,
                         value=value,
@@ -1284,7 +1291,8 @@ def sync_analytics_sources_and_statuses(api: YClientsAPI, db, company_id: str,
         if sources:
             for s in sources:
                 db.add(AnalyticsSourceMetric(
-                    date_from=date_from, date_to=date_to,
+                    date_from=parse_date(date_from),
+                    date_to=parse_date(date_to),
                     label=s.get('label', ''),
                     value=s.get('data'),
                     company_id=cid,
@@ -1297,7 +1305,8 @@ def sync_analytics_sources_and_statuses(api: YClientsAPI, db, company_id: str,
         if statuses:
             for s in statuses:
                 db.add(AnalyticsStatusMetric(
-                    date_from=date_from, date_to=date_to,
+                    date_from=parse_date(date_from),
+                    date_to=parse_date(date_to),
                     label=s.get('label', ''),
                     value=s.get('data'),
                     company_id=cid,
@@ -1330,11 +1339,12 @@ def sync_z_report(api: YClientsAPI, db, company_id: str, report_date: str):
 
     try:
         cid = int(company_id)
+        report_bound = parse_date(report_date)
         db.query(ZReport).filter(
-            ZReport.company_id == cid, ZReport.report_date == report_date
+            ZReport.company_id == cid, ZReport.report_date == report_bound
         ).delete()
         db.query(ZReportPayment).filter(
-            ZReportPayment.company_id == cid, ZReportPayment.report_date == report_date
+            ZReportPayment.company_id == cid, ZReportPayment.report_date == report_bound
         ).delete()
 
         stats = data.get('stats') or {}
@@ -1342,7 +1352,7 @@ def sync_z_report(api: YClientsAPI, db, company_id: str, report_date: str):
         total_paid = paids.get('total') or {}
 
         obj = ZReport(
-            report_date=report_date,
+            report_date=report_bound,
             clients=stats.get('clients'),
             clients_average=stats.get('clients_average'),
             records=stats.get('records'),
@@ -1368,7 +1378,7 @@ def sync_z_report(api: YClientsAPI, db, company_id: str, report_date: str):
 
         for acc in (paids.get('accounts') or []):
             db.add(ZReportPayment(
-                report_date=report_date,
+                report_date=report_bound,
                 payment_group='account',
                 title=acc.get('title'),
                 amount=acc.get('amount'),
@@ -1377,7 +1387,7 @@ def sync_z_report(api: YClientsAPI, db, company_id: str, report_date: str):
 
         for disc in (paids.get('discount') or []):
             db.add(ZReportPayment(
-                report_date=report_date,
+                report_date=report_bound,
                 payment_group='discount',
                 title=disc.get('title'),
                 amount=disc.get('amount'),
@@ -1406,17 +1416,6 @@ def execute_sync(mode: str = 'incremental', end_date: date | None = None):
     database = init_database(DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD)
 
     if not database.test_connection():
-        return {
-            'completed': False,
-            'success': False,
-            'step_results': [],
-            'mode': mode,
-            'window_start': None,
-            'window_end': None,
-            'companies_count': 0,
-        }
-
-    if not database.create_tables():
         return {
             'completed': False,
             'success': False,

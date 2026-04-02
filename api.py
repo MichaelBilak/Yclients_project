@@ -1,40 +1,122 @@
 """
-API сервер для предоставления данных YClients в табличном формате
+API server for exposing YClients BI data and queued sync controls.
 """
-import threading
-from fastapi import FastAPI, HTTPException, Depends, Header
-from fastapi.responses import Response
-from sqlalchemy.orm import Session
-from sqlalchemy import func
+from __future__ import annotations
+
+import csv
+import io
+from datetime import date, datetime, time
+from decimal import Decimal
+from typing import Any, Callable, Literal, Optional
+
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from models import (
-    Group, Company, ServiceCategory, Service, StaffPosition, Staff, Client,
-    Account, Storage, GoodCategory, Good,
-    Appointment, Transaction, FinancialTransaction, GoodTransaction,
-    Comment, StaffSchedule,
-)
-from database import init_database, get_db
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from config import (
     API_HOST,
+    API_KEY,
     API_PORT,
     DB_HOST,
-    DB_PORT,
     DB_NAME,
-    DB_USER,
     DB_PASSWORD,
+    DB_PORT,
+    DB_USER,
     SYNC_API_TOKEN,
 )
-import pandas as pd
-from typing import Literal, Optional
-from sync_orchestrator import get_sync_status, run_sync_job
+from database import get_async_db, init_async_database
+from models import (
+    Account,
+    Appointment,
+    Client,
+    Comment,
+    Company,
+    FinancialTransaction,
+    Good,
+    GoodCategory,
+    GoodTransaction,
+    Group,
+    Service,
+    ServiceCategory,
+    Staff,
+    StaffPosition,
+    StaffSchedule,
+    Storage,
+    Transaction,
+)
+from sync_jobs import SyncJobService
+from sync_orchestrator import get_sync_status
+from sync_parsing import parse_date, parse_datetime_end, parse_datetime_start
 
-init_database(DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD)
+init_async_database(DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD)
+
+MAX_PAGE_SIZE = 5000
+DEFAULT_PAGE_SIZE = 1000
+
+OPEN_PATHS = {"/health", "/openapi.json", "/docs", "/redoc"}
+
+
+def require_api_key(request: Request, x_api_key: str | None = Header(default=None)):
+    """Global auth: skip for health/docs, enforce when API_KEY is set."""
+    if request.url.path in OPEN_PATHS:
+        return
+    if not API_KEY:
+        return
+    if x_api_key != API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
 
 app = FastAPI(
     title="YClients BI System API",
     description="API для получения данных YClients в табличном формате",
-    version="3.0.0"
+    version="5.0.0",
+    dependencies=[Depends(require_api_key)],
 )
+
+
+def require_sync_token(x_sync_token: str | None = Header(default=None)):
+    if not SYNC_API_TOKEN:
+        return
+    if x_sync_token != SYNC_API_TOKEN:
+        raise HTTPException(status_code=401, detail="Invalid sync token")
+
+
+def serialize_value(value: Any) -> Any:
+    if isinstance(value, (datetime, date, time)):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return float(value)
+    return value
+
+
+def page_params(
+    limit: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
+    offset: int = Query(0, ge=0),
+) -> tuple[int, int]:
+    return limit, offset
+
+
+def build_page_response(total: int, limit: int, offset: int, data: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        'total': total,
+        'limit': limit,
+        'offset': offset,
+        'data': data,
+    }
+
+
+def serialize_rows(rows: list[Any], serializer: Callable[[Any], dict[str, Any]]) -> list[dict[str, Any]]:
+    return [serializer(row) for row in rows]
+
+
+async def fetch_page(db: AsyncSession, stmt, limit: int, offset: int) -> tuple[int, list[Any]]:
+    count_result = await db.execute(select(func.count()).select_from(stmt.order_by(None).subquery()))
+    total = count_result.scalar_one()
+    result = await db.execute(stmt.offset(offset).limit(limit))
+    items = list(result.scalars().all())
+    return total, items
 
 
 @app.get("/")
@@ -60,8 +142,10 @@ async def root():
             "/comments": "Комментарии / отзывы",
             "/staff_schedules": "Графики работы",
             "/stats": "Общая статистика",
+            "/sync/trigger": "Поставить sync в очередь",
+            "/sync/status": "Статус sync и очереди",
             "/export/csv/{table}": "Экспорт таблицы в CSV",
-        }
+        },
     }
 
 
@@ -70,74 +154,64 @@ async def health():
     return {"status": "ok"}
 
 
-def require_sync_token(x_sync_token: str | None = Header(default=None)):
-    if not SYNC_API_TOKEN:
-        return
-    if x_sync_token != SYNC_API_TOKEN:
-        raise HTTPException(status_code=401, detail="Invalid sync token")
-
-
-# ---------------------------------------------------------------
-# Groups
-# ---------------------------------------------------------------
-
 @app.get("/groups")
-async def api_groups(db: Session = Depends(get_db)):
-    try:
-        groups = db.query(Group).all()
-        data = [{
-            "id": g.id, "title": g.title,
-            "companies_count": db.query(Company).filter(Company.group_id == g.id).count(),
-        } for g in groups]
-        return {"total": len(data), "data": data}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+async def api_groups(
+    db: AsyncSession = Depends(get_async_db),
+    pagination: tuple[int, int] = Depends(page_params),
+):
+    limit, offset = pagination
+    stmt = select(Group).order_by(Group.id.asc())
+    total, groups = await fetch_page(db, stmt, limit, offset)
+    data = []
+    for group in groups:
+        count_result = await db.execute(
+            select(func.count()).where(Company.group_id == group.id)
+        )
+        data.append({
+            "id": group.id,
+            "title": group.title,
+            "companies_count": count_result.scalar_one(),
+        })
+    return build_page_response(total, limit, offset, data)
 
-
-# ---------------------------------------------------------------
-# Companies
-# ---------------------------------------------------------------
 
 @app.get("/companies")
-async def api_companies(group_id: Optional[int] = None, db: Session = Depends(get_db)):
-    try:
-        q = db.query(Company)
-        if group_id:
-            q = q.filter(Company.group_id == group_id)
-        companies = q.all()
+async def api_companies(
+    group_id: Optional[int] = None,
+    db: AsyncSession = Depends(get_async_db),
+    pagination: tuple[int, int] = Depends(page_params),
+):
+    limit, offset = pagination
+    stmt = select(Company)
+    if group_id is not None:
+        stmt = stmt.where(Company.group_id == group_id)
+    stmt = stmt.order_by(Company.id.asc())
+    total, companies = await fetch_page(db, stmt, limit, offset)
+    data = [{"id": c.id, "title": c.title, "group_id": c.group_id} for c in companies]
+    return build_page_response(total, limit, offset, data)
 
-        data = [{
-            "id": c.id, "title": c.title, "group_id": c.group_id,
-        } for c in companies]
-        return {"total": len(data), "data": data}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ---------------------------------------------------------------
-# Service Categories
-# ---------------------------------------------------------------
 
 @app.get("/service_categories")
-async def api_service_categories(company_id: Optional[int] = None,
-                                  db: Session = Depends(get_db)):
-    try:
-        q = db.query(ServiceCategory)
-        if company_id:
-            q = q.filter(ServiceCategory.company_id == company_id)
-        items = q.all()
-        data = [{
-            "id": i.id, "title": i.title, "weight": i.weight,
-            "api_id": i.api_id, "company_id": i.company_id,
-        } for i in items]
-        return {"total": len(data), "data": data}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+async def api_service_categories(
+    company_id: Optional[int] = None,
+    db: AsyncSession = Depends(get_async_db),
+    pagination: tuple[int, int] = Depends(page_params),
+):
+    limit, offset = pagination
+    stmt = select(ServiceCategory)
+    if company_id is not None:
+        stmt = stmt.where(ServiceCategory.company_id == company_id)
+    stmt = stmt.order_by(ServiceCategory.id.asc())
+    total, items = await fetch_page(db, stmt, limit, offset)
+    data = serialize_rows(items, lambda item: {
+        "id": item.id,
+        "title": item.title,
+        "weight": item.weight,
+        "api_id": item.api_id,
+        "company_id": item.company_id,
+    })
+    return build_page_response(total, limit, offset, data)
 
-
-# ---------------------------------------------------------------
-# Services
-# ---------------------------------------------------------------
 
 @app.get("/services")
 async def api_services(
@@ -145,197 +219,201 @@ async def api_services(
     category: Optional[str] = None,
     min_price: Optional[float] = None,
     max_price: Optional[float] = None,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
+    pagination: tuple[int, int] = Depends(page_params),
 ):
-    try:
-        q = db.query(Service)
-        if company_id:
-            q = q.filter(Service.company_id == company_id)
-        if category:
-            q = q.filter(Service.category_title == category)
-        if min_price is not None:
-            q = q.filter(Service.price_min >= min_price)
-        if max_price is not None:
-            q = q.filter(Service.price_min <= max_price)
+    limit, offset = pagination
+    stmt = select(Service)
+    if company_id is not None:
+        stmt = stmt.where(Service.company_id == company_id)
+    if category:
+        stmt = stmt.where(Service.category_title == category)
+    if min_price is not None:
+        stmt = stmt.where(Service.price_min >= min_price)
+    if max_price is not None:
+        stmt = stmt.where(Service.price_min <= max_price)
+    stmt = stmt.order_by(Service.id.asc())
+    total, services = await fetch_page(db, stmt, limit, offset)
+    data = serialize_rows(services, lambda item: {
+        "id": item.id,
+        "title": item.title,
+        "price_min": item.price_min,
+        "duration_sec": item.duration,
+        "duration_min": round(item.duration / 60, 1) if item.duration else None,
+        "category": item.category_title,
+        "company_id": item.company_id,
+    })
+    return build_page_response(total, limit, offset, data)
 
-        services = q.all()
-        data = [{
-            "id": s.id, "title": s.title,
-            "price_min": s.price_min,
-            "duration_sec": s.duration,
-            "duration_min": round(s.duration / 60, 1) if s.duration else None,
-            "category": s.category_title, "company_id": s.company_id,
-        } for s in services]
-
-        return {"total": len(data), "data": data}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ---------------------------------------------------------------
-# Staff Positions
-# ---------------------------------------------------------------
 
 @app.get("/staff_positions")
-async def api_staff_positions(company_id: Optional[int] = None,
-                               db: Session = Depends(get_db)):
-    try:
-        q = db.query(StaffPosition)
-        if company_id:
-            q = q.filter(StaffPosition.company_id == company_id)
-        items = q.all()
-        data = [{"id": i.id, "title": i.title, "company_id": i.company_id} for i in items]
-        return {"total": len(data), "data": data}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+async def api_staff_positions(
+    company_id: Optional[int] = None,
+    db: AsyncSession = Depends(get_async_db),
+    pagination: tuple[int, int] = Depends(page_params),
+):
+    limit, offset = pagination
+    stmt = select(StaffPosition)
+    if company_id is not None:
+        stmt = stmt.where(StaffPosition.company_id == company_id)
+    stmt = stmt.order_by(StaffPosition.id.asc())
+    total, items = await fetch_page(db, stmt, limit, offset)
+    data = serialize_rows(items, lambda item: {
+        "id": item.id,
+        "title": item.title,
+        "company_id": item.company_id,
+    })
+    return build_page_response(total, limit, offset, data)
 
-
-# ---------------------------------------------------------------
-# Staff
-# ---------------------------------------------------------------
 
 @app.get("/staff")
-async def api_staff(company_id: Optional[int] = None, db: Session = Depends(get_db)):
-    try:
-        q = db.query(Staff)
-        if company_id:
-            q = q.filter(Staff.company_id == company_id)
+async def api_staff(
+    company_id: Optional[int] = None,
+    db: AsyncSession = Depends(get_async_db),
+    pagination: tuple[int, int] = Depends(page_params),
+):
+    limit, offset = pagination
+    stmt = select(Staff)
+    if company_id is not None:
+        stmt = stmt.where(Staff.company_id == company_id)
+    stmt = stmt.order_by(Staff.id.asc())
+    total, items = await fetch_page(db, stmt, limit, offset)
+    data = serialize_rows(items, lambda item: {
+        "id": item.id,
+        "name": item.name,
+        "specialization": item.specialization,
+        "position": item.position,
+        "rating": item.rating,
+        "votes_count": item.votes_count,
+        "bookable": item.bookable,
+        "company_id": item.company_id,
+    })
+    return build_page_response(total, limit, offset, data)
 
-        staff = q.all()
-        data = [{
-            "id": s.id, "name": s.name, "specialization": s.specialization,
-            "position": s.position, "rating": s.rating,
-            "votes_count": s.votes_count, "bookable": s.bookable,
-            "company_id": s.company_id,
-        } for s in staff]
-        return {"total": len(data), "data": data}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ---------------------------------------------------------------
-# Clients
-# ---------------------------------------------------------------
 
 @app.get("/clients")
 async def api_clients(
     company_id: Optional[int] = None,
     min_visits: Optional[int] = None,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
+    pagination: tuple[int, int] = Depends(page_params),
 ):
-    try:
-        q = db.query(Client)
-        if company_id:
-            q = q.filter(Client.company_id == company_id)
-        if min_visits is not None:
-            q = q.filter(Client.visits_count >= min_visits)
+    limit, offset = pagination
+    stmt = select(Client)
+    if company_id is not None:
+        stmt = stmt.where(Client.company_id == company_id)
+    if min_visits is not None:
+        stmt = stmt.where(Client.visits_count >= min_visits)
+    stmt = stmt.order_by(Client.id.asc())
+    total, items = await fetch_page(db, stmt, limit, offset)
+    data = serialize_rows(items, lambda item: {
+        "id": item.id,
+        "name": item.name,
+        "phone": item.phone,
+        "email": item.email,
+        "birth_date": serialize_value(item.birth_date),
+        "visits_count": item.visits_count,
+        "last_visit_date": serialize_value(item.last_visit_date),
+        "discount": item.discount,
+        "company_id": item.company_id,
+    })
+    return build_page_response(total, limit, offset, data)
 
-        clients = q.all()
-        data = [{
-            "id": c.id, "name": c.name, "phone": c.phone, "email": c.email,
-            "birth_date": c.birth_date, "visits_count": c.visits_count,
-            "last_visit_date": c.last_visit_date, "discount": c.discount,
-            "company_id": c.company_id,
-        } for c in clients]
-        return {"total": len(data), "data": data}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ---------------------------------------------------------------
-# Accounts (cash registers)
-# ---------------------------------------------------------------
 
 @app.get("/accounts")
-async def api_accounts(company_id: Optional[int] = None,
-                        db: Session = Depends(get_db)):
-    try:
-        q = db.query(Account)
-        if company_id:
-            q = q.filter(Account.company_id == company_id)
-        items = q.all()
-        data = [{
-            "id": i.id, "title": i.title, "type": i.type,
-            "comment": i.comment, "company_id": i.company_id,
-        } for i in items]
-        return {"total": len(data), "data": data}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+async def api_accounts(
+    company_id: Optional[int] = None,
+    db: AsyncSession = Depends(get_async_db),
+    pagination: tuple[int, int] = Depends(page_params),
+):
+    limit, offset = pagination
+    stmt = select(Account)
+    if company_id is not None:
+        stmt = stmt.where(Account.company_id == company_id)
+    stmt = stmt.order_by(Account.id.asc())
+    total, items = await fetch_page(db, stmt, limit, offset)
+    data = serialize_rows(items, lambda item: {
+        "id": item.id,
+        "title": item.title,
+        "type": item.type,
+        "comment": item.comment,
+        "company_id": item.company_id,
+    })
+    return build_page_response(total, limit, offset, data)
 
-
-# ---------------------------------------------------------------
-# Storages (warehouses)
-# ---------------------------------------------------------------
 
 @app.get("/storages")
-async def api_storages(company_id: Optional[int] = None,
-                        db: Session = Depends(get_db)):
-    try:
-        q = db.query(Storage)
-        if company_id:
-            q = q.filter(Storage.company_id == company_id)
-        items = q.all()
-        data = [{
-            "id": i.id, "title": i.title,
-            "for_services": i.for_services, "for_sale": i.for_sale,
-            "comment": i.comment, "company_id": i.company_id,
-        } for i in items]
-        return {"total": len(data), "data": data}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+async def api_storages(
+    company_id: Optional[int] = None,
+    db: AsyncSession = Depends(get_async_db),
+    pagination: tuple[int, int] = Depends(page_params),
+):
+    limit, offset = pagination
+    stmt = select(Storage)
+    if company_id is not None:
+        stmt = stmt.where(Storage.company_id == company_id)
+    stmt = stmt.order_by(Storage.id.asc())
+    total, items = await fetch_page(db, stmt, limit, offset)
+    data = serialize_rows(items, lambda item: {
+        "id": item.id,
+        "title": item.title,
+        "for_services": item.for_services,
+        "for_sale": item.for_sale,
+        "comment": item.comment,
+        "company_id": item.company_id,
+    })
+    return build_page_response(total, limit, offset, data)
 
-
-# ---------------------------------------------------------------
-# Good Categories
-# ---------------------------------------------------------------
 
 @app.get("/good_categories")
-async def api_good_categories(company_id: Optional[int] = None,
-                               db: Session = Depends(get_db)):
-    try:
-        q = db.query(GoodCategory)
-        if company_id:
-            q = q.filter(GoodCategory.company_id == company_id)
-        items = q.all()
-        data = [{
-            "id": i.id, "title": i.title,
-            "parent_category_id": i.parent_category_id,
-            "company_id": i.company_id,
-        } for i in items]
-        return {"total": len(data), "data": data}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+async def api_good_categories(
+    company_id: Optional[int] = None,
+    db: AsyncSession = Depends(get_async_db),
+    pagination: tuple[int, int] = Depends(page_params),
+):
+    limit, offset = pagination
+    stmt = select(GoodCategory)
+    if company_id is not None:
+        stmt = stmt.where(GoodCategory.company_id == company_id)
+    stmt = stmt.order_by(GoodCategory.id.asc())
+    total, items = await fetch_page(db, stmt, limit, offset)
+    data = serialize_rows(items, lambda item: {
+        "id": item.id,
+        "title": item.title,
+        "parent_category_id": item.parent_category_id,
+        "company_id": item.company_id,
+    })
+    return build_page_response(total, limit, offset, data)
 
-
-# ---------------------------------------------------------------
-# Goods (products)
-# ---------------------------------------------------------------
 
 @app.get("/goods")
-async def api_goods(company_id: Optional[int] = None,
-                     category_id: Optional[int] = None,
-                     db: Session = Depends(get_db)):
-    try:
-        q = db.query(Good)
-        if company_id:
-            q = q.filter(Good.company_id == company_id)
-        if category_id:
-            q = q.filter(Good.category_id == category_id)
-        items = q.all()
-        data = [{
-            "good_id": i.good_id, "title": i.title,
-            "cost": i.cost, "actual_cost": i.actual_cost,
-            "barcode": i.barcode, "unit": i.unit_short_title,
-            "category_id": i.category_id, "company_id": i.company_id,
-        } for i in items]
-        return {"total": len(data), "data": data}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+async def api_goods(
+    company_id: Optional[int] = None,
+    category_id: Optional[int] = None,
+    db: AsyncSession = Depends(get_async_db),
+    pagination: tuple[int, int] = Depends(page_params),
+):
+    limit, offset = pagination
+    stmt = select(Good)
+    if company_id is not None:
+        stmt = stmt.where(Good.company_id == company_id)
+    if category_id is not None:
+        stmt = stmt.where(Good.category_id == category_id)
+    stmt = stmt.order_by(Good.good_id.asc())
+    total, items = await fetch_page(db, stmt, limit, offset)
+    data = serialize_rows(items, lambda item: {
+        "good_id": item.good_id,
+        "title": item.title,
+        "cost": item.cost,
+        "actual_cost": item.actual_cost,
+        "barcode": item.barcode,
+        "unit": item.unit_short_title,
+        "category_id": item.category_id,
+        "last_change_date": serialize_value(item.last_change_date),
+        "company_id": item.company_id,
+    })
+    return build_page_response(total, limit, offset, data)
 
-
-# ---------------------------------------------------------------
-# Appointments
-# ---------------------------------------------------------------
 
 @app.get("/appointments")
 async def api_appointments(
@@ -344,161 +422,170 @@ async def api_appointments(
     client_id: Optional[int] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
+    pagination: tuple[int, int] = Depends(page_params),
 ):
-    try:
-        q = db.query(Appointment)
-        if company_id:
-            q = q.filter(Appointment.company_id == company_id)
-        if staff_id:
-            q = q.filter(Appointment.staff_id == staff_id)
-        if client_id:
-            q = q.filter(Appointment.client_id == client_id)
-        if date_from:
-            q = q.filter(Appointment.date >= date_from)
-        if date_to:
-            q = q.filter(Appointment.date <= date_to)
+    limit, offset = pagination
+    stmt = select(Appointment)
+    if company_id is not None:
+        stmt = stmt.where(Appointment.company_id == company_id)
+    if staff_id is not None:
+        stmt = stmt.where(Appointment.staff_id == staff_id)
+    if client_id is not None:
+        stmt = stmt.where(Appointment.client_id == client_id)
+    if date_from:
+        stmt = stmt.where(Appointment.date >= parse_date(date_from))
+    if date_to:
+        stmt = stmt.where(Appointment.date <= parse_date(date_to))
+    stmt = stmt.order_by(Appointment.id.asc())
+    total, items = await fetch_page(db, stmt, limit, offset)
+    data = serialize_rows(items, lambda item: {
+        "id": item.id,
+        "company_id": item.company_id,
+        "staff_id": item.staff_id,
+        "client_id": item.client_id,
+        "date": serialize_value(item.date),
+        "datetime": serialize_value(item.datetime),
+        "create_date": serialize_value(item.create_date),
+        "seance_length": item.seance_length,
+        "attendance": item.attendance,
+        "comment": item.comment,
+    })
+    return build_page_response(total, limit, offset, data)
 
-        appointments = q.all()
-        data = [{
-            "id": a.id, "company_id": a.company_id,
-            "staff_id": a.staff_id, "client_id": a.client_id,
-            "date": a.date, "datetime": a.datetime,
-            "create_date": a.create_date, "seance_length": a.seance_length,
-            "attendance": a.attendance, "comment": a.comment,
-        } for a in appointments]
-        return {"total": len(data), "data": data}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ---------------------------------------------------------------
-# Transactions (services inside appointments)
-# ---------------------------------------------------------------
 
 @app.get("/transactions")
 async def api_transactions(
     company_id: Optional[int] = None,
     appointment_id: Optional[int] = None,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
+    pagination: tuple[int, int] = Depends(page_params),
 ):
-    try:
-        q = db.query(Transaction)
-        if company_id:
-            q = q.filter(Transaction.company_id == company_id)
-        if appointment_id:
-            q = q.filter(Transaction.appointment_id == appointment_id)
+    limit, offset = pagination
+    stmt = select(Transaction)
+    if company_id is not None:
+        stmt = stmt.where(Transaction.company_id == company_id)
+    if appointment_id is not None:
+        stmt = stmt.where(Transaction.appointment_id == appointment_id)
+    stmt = stmt.order_by(Transaction.id.asc())
+    total, items = await fetch_page(db, stmt, limit, offset)
+    data = serialize_rows(items, lambda item: {
+        "id": item.id,
+        "appointment_id": item.appointment_id,
+        "service_id": item.service_id,
+        "service_title": item.service_title,
+        "cost": item.cost,
+        "first_cost": item.first_cost,
+        "amount": item.amount,
+        "company_id": item.company_id,
+    })
+    return build_page_response(total, limit, offset, data)
 
-        txns = q.all()
-        data = [{
-            "id": t.id, "appointment_id": t.appointment_id,
-            "service_id": t.service_id, "service_title": t.service_title,
-            "cost": t.cost, "first_cost": t.first_cost,
-            "amount": t.amount, "company_id": t.company_id,
-        } for t in txns]
-        return {"total": len(data), "data": data}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ---------------------------------------------------------------
-# Financial Transactions
-# ---------------------------------------------------------------
 
 @app.get("/financial_transactions")
 async def api_financial_transactions(
     company_id: Optional[int] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
+    pagination: tuple[int, int] = Depends(page_params),
 ):
-    try:
-        q = db.query(FinancialTransaction)
-        if company_id:
-            q = q.filter(FinancialTransaction.company_id == company_id)
-        if date_from:
-            q = q.filter(FinancialTransaction.date >= date_from)
-        if date_to:
-            q = q.filter(FinancialTransaction.date <= date_to)
+    limit, offset = pagination
+    stmt = select(FinancialTransaction)
+    if company_id is not None:
+        stmt = stmt.where(FinancialTransaction.company_id == company_id)
+    if date_from:
+        stmt = stmt.where(FinancialTransaction.date >= parse_datetime_start(date_from))
+    if date_to:
+        stmt = stmt.where(FinancialTransaction.date <= parse_datetime_end(date_to))
+    stmt = stmt.order_by(FinancialTransaction.id.asc())
+    total, items = await fetch_page(db, stmt, limit, offset)
+    data = serialize_rows(items, lambda item: {
+        "id": item.id,
+        "document_id": item.document_id,
+        "expense_id": item.expense_id,
+        "date": serialize_value(item.date),
+        "amount": item.amount,
+        "comment": item.comment,
+        "account_id": item.account_id,
+        "client_id": item.client_id,
+        "master_id": item.master_id,
+        "record_id": item.record_id,
+        "visit_id": item.visit_id,
+        "sold_item_id": item.sold_item_id,
+        "sold_item_type": item.sold_item_type,
+        "company_id": item.company_id,
+    })
+    return build_page_response(total, limit, offset, data)
 
-        items = q.all()
-        data = [{
-            "id": i.id, "document_id": i.document_id,
-            "expense_id": i.expense_id, "date": i.date,
-            "amount": i.amount, "comment": i.comment,
-            "account_id": i.account_id, "client_id": i.client_id,
-            "master_id": i.master_id, "record_id": i.record_id,
-            "visit_id": i.visit_id, "sold_item_id": i.sold_item_id,
-            "sold_item_type": i.sold_item_type, "company_id": i.company_id,
-        } for i in items]
-        return {"total": len(data), "data": data}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ---------------------------------------------------------------
-# Goods Transactions
-# ---------------------------------------------------------------
 
 @app.get("/goods_transactions")
 async def api_goods_transactions(
     company_id: Optional[int] = None,
-    date_from: Optional[str] = None,
-    date_to: Optional[str] = None,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
+    pagination: tuple[int, int] = Depends(page_params),
 ):
-    try:
-        q = db.query(GoodTransaction)
-        if company_id:
-            q = q.filter(GoodTransaction.company_id == company_id)
-        items = q.all()
-        data = [{
-            "id": i.id, "document_id": i.document_id,
-            "type_id": i.type_id, "good_id": i.good_id,
-            "storage_id": i.storage_id, "amount": i.amount,
-            "cost_per_unit": i.cost_per_unit, "cost": i.cost,
-            "discount": i.discount, "master_id": i.master_id,
-            "client_id": i.client_id, "company_id": i.company_id,
-        } for i in items]
-        return {"total": len(data), "data": data}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    limit, offset = pagination
+    stmt = select(GoodTransaction)
+    if company_id is not None:
+        stmt = stmt.where(GoodTransaction.company_id == company_id)
+    stmt = stmt.order_by(GoodTransaction.id.asc())
+    total, items = await fetch_page(db, stmt, limit, offset)
+    data = serialize_rows(items, lambda item: {
+        "id": item.id,
+        "document_id": item.document_id,
+        "type_id": item.type_id,
+        "good_id": item.good_id,
+        "storage_id": item.storage_id,
+        "amount": item.amount,
+        "cost_per_unit": item.cost_per_unit,
+        "cost": item.cost,
+        "discount": item.discount,
+        "master_id": item.master_id,
+        "client_id": item.client_id,
+        "company_id": item.company_id,
+    })
+    return build_page_response(total, limit, offset, data)
 
-
-# ---------------------------------------------------------------
-# Comments / Reviews
-# ---------------------------------------------------------------
 
 @app.get("/comments")
 async def api_comments(
     company_id: Optional[int] = None,
     staff_id: Optional[int] = None,
     min_rating: Optional[float] = None,
-    db: Session = Depends(get_db),
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    db: AsyncSession = Depends(get_async_db),
+    pagination: tuple[int, int] = Depends(page_params),
 ):
-    try:
-        q = db.query(Comment)
-        if company_id:
-            q = q.filter(Comment.company_id == company_id)
-        if staff_id:
-            q = q.filter(Comment.master_id == staff_id)
-        if min_rating is not None:
-            q = q.filter(Comment.rating >= min_rating)
-        items = q.all()
-        data = [{
-            "id": i.id, "type": i.type, "master_id": i.master_id,
-            "text": i.text, "date": i.date, "rating": i.rating,
-            "user_id": i.user_id, "user_name": i.user_name,
-            "record_id": i.record_id, "company_id": i.company_id,
-        } for i in items]
-        return {"total": len(data), "data": data}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    limit, offset = pagination
+    stmt = select(Comment)
+    if company_id is not None:
+        stmt = stmt.where(Comment.company_id == company_id)
+    if staff_id is not None:
+        stmt = stmt.where(Comment.master_id == staff_id)
+    if min_rating is not None:
+        stmt = stmt.where(Comment.rating >= min_rating)
+    if date_from:
+        stmt = stmt.where(Comment.date >= parse_datetime_start(date_from))
+    if date_to:
+        stmt = stmt.where(Comment.date <= parse_datetime_end(date_to))
+    stmt = stmt.order_by(Comment.id.asc())
+    total, items = await fetch_page(db, stmt, limit, offset)
+    data = serialize_rows(items, lambda item: {
+        "id": item.id,
+        "type": item.type,
+        "master_id": item.master_id,
+        "text": item.text,
+        "date": serialize_value(item.date),
+        "rating": item.rating,
+        "user_id": item.user_id,
+        "user_name": item.user_name,
+        "record_id": item.record_id,
+        "company_id": item.company_id,
+    })
+    return build_page_response(total, limit, offset, data)
 
-
-# ---------------------------------------------------------------
-# Staff Schedules
-# ---------------------------------------------------------------
 
 @app.get("/staff_schedules")
 async def api_staff_schedules(
@@ -506,74 +593,75 @@ async def api_staff_schedules(
     staff_id: Optional[int] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
+    pagination: tuple[int, int] = Depends(page_params),
 ):
-    try:
-        q = db.query(StaffSchedule)
-        if company_id:
-            q = q.filter(StaffSchedule.company_id == company_id)
-        if staff_id:
-            q = q.filter(StaffSchedule.staff_id == staff_id)
-        if date_from:
-            q = q.filter(StaffSchedule.date >= date_from)
-        if date_to:
-            q = q.filter(StaffSchedule.date <= date_to)
+    limit, offset = pagination
+    stmt = select(StaffSchedule)
+    if company_id is not None:
+        stmt = stmt.where(StaffSchedule.company_id == company_id)
+    if staff_id is not None:
+        stmt = stmt.where(StaffSchedule.staff_id == staff_id)
+    if date_from:
+        stmt = stmt.where(StaffSchedule.date >= parse_date(date_from))
+    if date_to:
+        stmt = stmt.where(StaffSchedule.date <= parse_date(date_to))
+    stmt = stmt.order_by(StaffSchedule.id.asc())
+    total, items = await fetch_page(db, stmt, limit, offset)
+    data = serialize_rows(items, lambda item: {
+        "id": item.id,
+        "staff_id": item.staff_id,
+        "date": serialize_value(item.date),
+        "slot_from": serialize_value(item.slot_from),
+        "slot_to": serialize_value(item.slot_to),
+        "company_id": item.company_id,
+    })
+    return build_page_response(total, limit, offset, data)
 
-        items = q.all()
-        data = [{
-            "id": i.id, "staff_id": i.staff_id,
-            "date": i.date, "slot_from": i.slot_from,
-            "slot_to": i.slot_to, "company_id": i.company_id,
-        } for i in items]
-        return {"total": len(data), "data": data}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ---------------------------------------------------------------
-# Stats
-# ---------------------------------------------------------------
 
 @app.get("/stats")
-async def api_stats(db: Session = Depends(get_db)):
-    try:
-        revenue = db.query(func.sum(Transaction.cost * Transaction.amount)).scalar() or 0
-        fin_income = db.query(func.sum(FinancialTransaction.amount)).filter(
-            FinancialTransaction.amount > 0
-        ).scalar() or 0
+async def api_stats(db: AsyncSession = Depends(get_async_db)):
+    revenue_result = await db.execute(
+        select(func.sum(Transaction.cost * Transaction.amount))
+    )
+    revenue = revenue_result.scalar_one_or_none() or 0
 
-        appointments_total = db.query(Appointment).count()
-        attended = db.query(Appointment).filter(Appointment.attendance > 0).count()
+    fin_result = await db.execute(
+        select(func.sum(FinancialTransaction.amount)).where(FinancialTransaction.amount > 0)
+    )
+    fin_income = fin_result.scalar_one_or_none() or 0
 
-        return {
-            "groups": db.query(Group).count(),
-            "companies": db.query(Company).count(),
-            "service_categories": db.query(ServiceCategory).count(),
-            "services": db.query(Service).count(),
-            "staff_positions": db.query(StaffPosition).count(),
-            "staff": db.query(Staff).count(),
-            "clients": db.query(Client).count(),
-            "accounts": db.query(Account).count(),
-            "storages": db.query(Storage).count(),
-            "good_categories": db.query(GoodCategory).count(),
-            "goods": db.query(Good).count(),
-            "appointments": appointments_total,
-            "appointments_attended": attended,
-            "transactions": db.query(Transaction).count(),
-            "financial_transactions": db.query(FinancialTransaction).count(),
-            "goods_transactions": db.query(GoodTransaction).count(),
-            "comments": db.query(Comment).count(),
-            "staff_schedule_slots": db.query(StaffSchedule).count(),
-            "total_revenue": round(revenue, 2),
-            "financial_income": round(fin_income, 2),
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    async def count_of(model):
+        r = await db.execute(select(func.count()).select_from(model))
+        return r.scalar_one()
 
+    attended_result = await db.execute(
+        select(func.count()).where(Appointment.attendance > 0)
+    )
+    appointments_total = await count_of(Appointment)
 
-# ---------------------------------------------------------------
-# Sync Trigger (ручной запуск синхронизации)
-# ---------------------------------------------------------------
+    return {
+        "groups": await count_of(Group),
+        "companies": await count_of(Company),
+        "service_categories": await count_of(ServiceCategory),
+        "services": await count_of(Service),
+        "staff_positions": await count_of(StaffPosition),
+        "staff": await count_of(Staff),
+        "clients": await count_of(Client),
+        "accounts": await count_of(Account),
+        "storages": await count_of(Storage),
+        "good_categories": await count_of(GoodCategory),
+        "goods": await count_of(Good),
+        "appointments": appointments_total,
+        "appointments_attended": attended_result.scalar_one(),
+        "transactions": await count_of(Transaction),
+        "financial_transactions": await count_of(FinancialTransaction),
+        "goods_transactions": await count_of(GoodTransaction),
+        "comments": await count_of(Comment),
+        "staff_schedule_slots": await count_of(StaffSchedule),
+        "total_revenue": round(revenue, 2),
+        "financial_income": round(fin_income, 2),
+    }
 
 
 class SyncTriggerRequest(BaseModel):
@@ -581,39 +669,31 @@ class SyncTriggerRequest(BaseModel):
     initiator: str = 'dashboard'
 
 
-def _run_sync_in_background(mode: str, initiator: str):
-    run_sync_job(mode=mode, trigger_type='manual', initiator=initiator)
-
-
 @app.post("/sync/trigger")
-async def trigger_sync(payload: SyncTriggerRequest, _: None = Depends(require_sync_token)):
-    status = get_sync_status()
-    if status.get('running'):
-        return {"status": "already_running", "message": "Синхронизация уже запущена", "detail": status}
-
-    thread = threading.Thread(
-        target=_run_sync_in_background,
-        kwargs={'mode': payload.mode, 'initiator': payload.initiator},
-        daemon=True,
-    )
-    thread.start()
-
+async def trigger_sync(
+    payload: SyncTriggerRequest,
+    _: None = Depends(require_sync_token),
+    db: AsyncSession = Depends(get_async_db),
+):
+    job = await SyncJobService().async_enqueue_job(db, payload.mode, payload.initiator)
     return {
-        "status": "started",
-        "message": "Синхронизация запущена в фоне",
-        "mode": payload.mode,
-        "initiator": payload.initiator,
+        "status": "queued",
+        "job_id": job.id,
+        "mode": job.mode,
+        "initiator": job.initiator,
     }
 
 
 @app.get("/sync/status")
-async def sync_status(_: None = Depends(require_sync_token)):
-    return get_sync_status()
+async def sync_status(
+    _: None = Depends(require_sync_token),
+    db: AsyncSession = Depends(get_async_db),
+):
+    return {
+        "sync": get_sync_status(),
+        "queue": await SyncJobService().async_get_status_payload(db),
+    }
 
-
-# ---------------------------------------------------------------
-# CSV Export (универсальный)
-# ---------------------------------------------------------------
 
 TABLE_MAP = {
     "groups": Group,
@@ -636,33 +716,41 @@ TABLE_MAP = {
 }
 
 
+async def async_stream_csv_rows(db: AsyncSession, model):
+    columns = [column.key for column in model.__table__.columns]
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(columns)
+    yield buffer.getvalue()
+    buffer.seek(0)
+    buffer.truncate(0)
+
+    stmt = select(model).order_by(*model.__table__.primary_key.columns)
+    result = await db.stream(stmt)
+    async for row in result.scalars():
+        writer.writerow([serialize_value(getattr(row, column)) for column in columns])
+        yield buffer.getvalue()
+        buffer.seek(0)
+        buffer.truncate(0)
+
+
 @app.get("/export/csv/{table_name}")
-async def export_csv(table_name: str, db: Session = Depends(get_db)):
-    if table_name not in TABLE_MAP:
+async def export_csv(table_name: str, db: AsyncSession = Depends(get_async_db)):
+    model = TABLE_MAP.get(table_name)
+    if model is None:
         raise HTTPException(
             status_code=404,
-            detail=f"Таблица '{table_name}' не найдена. Доступные: {list(TABLE_MAP.keys())}"
+            detail=f"Table '{table_name}' not found. Available: {list(TABLE_MAP.keys())}",
         )
 
-    try:
-        model = TABLE_MAP[table_name]
-        rows = db.query(model).all()
-
-        columns = [c.key for c in model.__table__.columns]
-        data = [{col: getattr(row, col) for col in columns} for row in rows]
-
-        df = pd.DataFrame(data)
-        csv_content = df.to_csv(index=False, encoding='utf-8-sig')
-
-        return Response(
-            content=csv_content,
-            media_type="text/csv",
-            headers={"Content-Disposition": f"attachment; filename={table_name}.csv"},
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return StreamingResponse(
+        async_stream_csv_rows(db, model),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename={table_name}.csv"},
+    )
 
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host=API_HOST, port=API_PORT)

@@ -1,22 +1,35 @@
 """
-Модуль для работы с базой данных PostgreSQL
+Database helpers for PostgreSQL connectivity and migrations.
+
+Sync engine (psycopg2) is used by ETL pipeline / worker.
+Async engine (asyncpg) is used by FastAPI endpoints.
 """
-from sqlalchemy import create_engine, inspect, text
-from sqlalchemy.orm import sessionmaker, Session
+from collections.abc import AsyncGenerator, Generator
+from pathlib import Path
+
+from alembic import command
+from alembic.config import Config
+from sqlalchemy import create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
-from models import Base
-from typing import Generator
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.orm import Session, sessionmaker
+
+
+def build_database_url(host: str, port: int, name: str, user: str, password: str = '') -> str:
+    creds = f'{user}:{password}' if password else user
+    return f'postgresql+psycopg2://{creds}@{host}:{port}/{name}'
+
+
+def build_async_database_url(host: str, port: int, name: str, user: str, password: str = '') -> str:
+    creds = f'{user}:{password}' if password else user
+    return f'postgresql+asyncpg://{creds}@{host}:{port}/{name}'
 
 
 class Database:
-    """Класс для работы с локальной базой данных PostgreSQL"""
+    """Sync connection wrapper — used by ETL pipeline and worker."""
 
     def __init__(self, host: str, port: int, name: str, user: str, password: str = ''):
-        if password:
-            self.database_url = f'postgresql+psycopg2://{user}:{password}@{host}:{port}/{name}'
-        else:
-            self.database_url = f'postgresql+psycopg2://{user}@{host}:{port}/{name}'
-
+        self.database_url = build_database_url(host, port, name, user, password)
         self.engine = create_engine(
             self.database_url,
             pool_pre_ping=True,
@@ -24,44 +37,7 @@ class Database:
         )
         self.SessionLocal = sessionmaker(bind=self.engine)
 
-    def create_tables(self) -> bool:
-        try:
-            self.ensure_system_schema()
-            Base.metadata.create_all(self.engine)
-            self.migrate_legacy_sync_state()
-            self.create_indexes()
-            print("✓ Таблицы созданы/проверены")
-            return True
-        except SQLAlchemyError as e:
-            print(f"✗ Ошибка при создании таблиц: {e}")
-            return False
-
-    def ensure_system_schema(self) -> None:
-        with self.engine.begin() as conn:
-            conn.execute(text("CREATE SCHEMA IF NOT EXISTS system"))
-
-    def migrate_legacy_sync_state(self) -> None:
-        inspector = inspect(self.engine)
-        if not inspector.has_table('sync_state', schema='public'):
-            return
-        if not inspector.has_table('sync_state', schema='system'):
-            return
-
-        with self.engine.begin() as conn:
-            conn.execute(text("""
-                INSERT INTO system.sync_state (key, value, updated_at)
-                SELECT key, value, updated_at
-                FROM public.sync_state
-                ON CONFLICT (key) DO NOTHING
-            """))
-
-    def create_indexes(self) -> None:
-        for table in Base.metadata.tables.values():
-            for index in table.indexes:
-                index.create(bind=self.engine, checkfirst=True)
-
     def get_session(self) -> Generator[Session, None, None]:
-        """Получить сессию (для FastAPI Depends)"""
         db = self.SessionLocal()
         try:
             yield db
@@ -69,21 +45,22 @@ class Database:
             db.close()
 
     def get_db(self) -> Session:
-        """Получить сессию (для прямого использования)"""
         return self.SessionLocal()
 
     def test_connection(self) -> bool:
         try:
             with self.engine.connect() as conn:
                 conn.execute(text("SELECT 1"))
-            print("✓ Подключение к базе данных успешно")
+            print("Connection to database successful")
             return True
-        except SQLAlchemyError as e:
-            print(f"✗ Ошибка подключения к базе данных: {e}")
+        except SQLAlchemyError as exc:
+            print(f"Database connection error: {exc}")
             return False
 
 
-db_instance: Database = None
+# --- Sync singleton (ETL / worker) ---
+
+db_instance: Database | None = None
 
 
 def init_database(host: str, port: int, name: str, user: str, password: str = '') -> Database:
@@ -93,7 +70,34 @@ def init_database(host: str, port: int, name: str, user: str, password: str = ''
 
 
 def get_db() -> Generator[Session, None, None]:
-    """Получить сессию базы данных (для FastAPI Depends)"""
     if db_instance is None:
-        raise RuntimeError("База данных не инициализирована. Вызовите init_database()")
+        raise RuntimeError("Database not initialized. Call init_database() first.")
     yield from db_instance.get_session()
+
+
+# --- Async singleton (FastAPI) ---
+
+_async_session_factory: async_sessionmaker[AsyncSession] | None = None
+
+
+def init_async_database(host: str, port: int, name: str, user: str, password: str = '') -> None:
+    global _async_session_factory
+    url = build_async_database_url(host, port, name, user, password)
+    engine = create_async_engine(url, pool_pre_ping=True, pool_recycle=300)
+    _async_session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+
+async def get_async_db() -> AsyncGenerator[AsyncSession, None]:
+    if _async_session_factory is None:
+        raise RuntimeError("Async database not initialized. Call init_async_database() first.")
+    async with _async_session_factory() as session:
+        yield session
+
+
+# --- Migrations ---
+
+def run_migrations(database_url: str, revision: str = 'head') -> None:
+    config = Config(str(Path(__file__).resolve().parent / 'alembic.ini'))
+    config.set_main_option('script_location', str(Path(__file__).resolve().parent / 'alembic'))
+    config.set_main_option('sqlalchemy.url', database_url)
+    command.upgrade(config, revision)

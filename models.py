@@ -1,13 +1,21 @@
-from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, ForeignKey, JSON, Text
+from sqlalchemy import (
+    Boolean,
+    Column,
+    Date,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    JSON,
+    String,
+    Text,
+    Time,
+)
 from sqlalchemy.orm import declarative_base, relationship
 
 Base = declarative_base()
 SYSTEM_SCHEMA = 'system'
 
-
-# ===================================================================
-# Сети и компании
-# ===================================================================
 
 class Group(Base):
     __tablename__ = 'groups'
@@ -33,10 +41,6 @@ class Company(Base):
     appointments = relationship("Appointment", back_populates="company")
 
 
-# ===================================================================
-# Категории услуг и услуги
-# ===================================================================
-
 class ServiceCategory(Base):
     __tablename__ = 'service_categories'
 
@@ -59,10 +63,6 @@ class Service(Base):
 
     company = relationship("Company", back_populates="services")
 
-
-# ===================================================================
-# Должности и сотрудники
-# ===================================================================
 
 class StaffPosition(Base):
     __tablename__ = 'staff_positions'
@@ -88,10 +88,6 @@ class Staff(Base):
     company = relationship("Company", back_populates="staff")
 
 
-# ===================================================================
-# Клиенты
-# ===================================================================
-
 class Client(Base):
     __tablename__ = 'clients'
 
@@ -99,21 +95,16 @@ class Client(Base):
     name = Column(String, nullable=False)
     phone = Column(String, index=True)
     email = Column(String)
-    birth_date = Column(String)
+    birth_date = Column(Date)
     visits_count = Column(Integer, default=0)
-    last_visit_date = Column(String, index=True)
+    last_visit_date = Column(Date, index=True)
     discount = Column(Float, default=0)
     company_id = Column(Integer, ForeignKey('companies.id'), index=True)
 
     company = relationship("Company", back_populates="clients")
 
 
-# ===================================================================
-# Кассы и склады
-# ===================================================================
-
 class Account(Base):
-    """Кассы (наличные / безналичные)"""
     __tablename__ = 'accounts'
 
     id = Column(Integer, primary_key=True)
@@ -124,7 +115,6 @@ class Account(Base):
 
 
 class Storage(Base):
-    """Склады"""
     __tablename__ = 'storages'
 
     id = Column(Integer, primary_key=True)
@@ -134,10 +124,6 @@ class Storage(Base):
     comment = Column(Text)
     company_id = Column(Integer, ForeignKey('companies.id'), index=True)
 
-
-# ===================================================================
-# Товары и категории товаров
-# ===================================================================
 
 class GoodCategory(Base):
     __tablename__ = 'good_categories'
@@ -158,13 +144,9 @@ class Good(Base):
     barcode = Column(String, index=True)
     unit_short_title = Column(String)
     category_id = Column(Integer, index=True)
-    last_change_date = Column(String, index=True)
+    last_change_date = Column(DateTime, index=True)
     company_id = Column(Integer, ForeignKey('companies.id'), index=True)
 
-
-# ===================================================================
-# Записи и транзакции (услуги внутри записи)
-# ===================================================================
 
 class Appointment(Base):
     __tablename__ = 'appointments'
@@ -173,9 +155,9 @@ class Appointment(Base):
     company_id = Column(Integer, ForeignKey('companies.id'), index=True)
     staff_id = Column(Integer, index=True)
     client_id = Column(Integer, index=True)
-    date = Column(String, index=True)
-    datetime = Column(String)
-    create_date = Column(String)
+    date = Column(Date, index=True)
+    datetime = Column(DateTime)
+    create_date = Column(DateTime)
     seance_length = Column(Integer)
     attendance = Column(Integer, default=0, index=True)
     comment = Column(Text)
@@ -185,7 +167,6 @@ class Appointment(Base):
 
 
 class Transaction(Base):
-    """Услуги внутри записи"""
     __tablename__ = 'transactions'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -200,17 +181,13 @@ class Transaction(Base):
     appointment = relationship("Appointment", back_populates="transactions")
 
 
-# ===================================================================
-# Финансовые транзакции (движения денег)
-# ===================================================================
-
 class FinancialTransaction(Base):
     __tablename__ = 'financial_transactions'
 
     id = Column(Integer, primary_key=True)
     document_id = Column(Integer)
     expense_id = Column(Integer)
-    date = Column(String, index=True)
+    date = Column(DateTime, index=True)
     amount = Column(Float)
     comment = Column(Text)
     account_id = Column(Integer, index=True)
@@ -222,10 +199,6 @@ class FinancialTransaction(Base):
     sold_item_type = Column(String)
     company_id = Column(Integer, ForeignKey('companies.id'), index=True)
 
-
-# ===================================================================
-# Товарные транзакции (движения товаров по складам)
-# ===================================================================
 
 class GoodTransaction(Base):
     __tablename__ = 'goods_transactions'
@@ -244,10 +217,6 @@ class GoodTransaction(Base):
     company_id = Column(Integer, ForeignKey('companies.id'), index=True)
 
 
-# ===================================================================
-# Комментарии / отзывы
-# ===================================================================
-
 class Comment(Base):
     __tablename__ = 'comments'
 
@@ -255,7 +224,7 @@ class Comment(Base):
     type = Column(String)
     master_id = Column(Integer, index=True)
     text = Column(Text)
-    date = Column(String, index=True)
+    date = Column(DateTime, index=True)
     rating = Column(Float)
     user_id = Column(Integer)
     user_name = Column(String)
@@ -263,33 +232,24 @@ class Comment(Base):
     company_id = Column(Integer, ForeignKey('companies.id'), index=True)
 
 
-# ===================================================================
-# Графики работы сотрудников
-# ===================================================================
-
 class StaffSchedule(Base):
     __tablename__ = 'staff_schedules'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     staff_id = Column(Integer, index=True)
-    date = Column(String, index=True)
-    slot_from = Column(String)
-    slot_to = Column(String)
+    date = Column(Date, index=True)
+    slot_from = Column(Time)
+    slot_to = Column(Time)
     company_id = Column(Integer, ForeignKey('companies.id'), index=True)
 
 
-# ===================================================================
-# Аналитика YClients (предагрегированные данные)
-# ===================================================================
-
 class AnalyticsOverall(Base):
-    """Основные показатели компании за период (snapshot)"""
     __tablename__ = 'analytics_overall'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    date_from = Column(String, nullable=False, index=True)
-    date_to = Column(String, nullable=False, index=True)
-    fetched_at = Column(String)
+    date_from = Column(Date, nullable=False, index=True)
+    date_to = Column(Date, nullable=False, index=True)
+    fetched_at = Column(DateTime)
 
     income_total = Column(Float)
     income_total_prev = Column(Float)
@@ -327,11 +287,10 @@ class AnalyticsOverall(Base):
 
 
 class AnalyticsDailyMetric(Base):
-    """Данные по дням: выручка / записи / заполненность"""
     __tablename__ = 'analytics_daily_metrics'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    date = Column(String, nullable=False, index=True)
+    date = Column(Date, nullable=False, index=True)
     metric_type = Column(String, nullable=False, index=True)
     label = Column(String)
     value = Column(Float)
@@ -339,39 +298,32 @@ class AnalyticsDailyMetric(Base):
 
 
 class AnalyticsSourceMetric(Base):
-    """Структура записей по источникам"""
     __tablename__ = 'analytics_record_sources'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    date_from = Column(String, index=True)
-    date_to = Column(String, index=True)
+    date_from = Column(Date, index=True)
+    date_to = Column(Date, index=True)
     label = Column(String, nullable=False)
     value = Column(Integer)
     company_id = Column(Integer, ForeignKey('companies.id'), index=True)
 
 
 class AnalyticsStatusMetric(Base):
-    """Структура записей по статусам визитов"""
     __tablename__ = 'analytics_record_statuses'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    date_from = Column(String, index=True)
-    date_to = Column(String, index=True)
+    date_from = Column(Date, index=True)
+    date_to = Column(Date, index=True)
     label = Column(String, nullable=False)
     value = Column(Integer)
     company_id = Column(Integer, ForeignKey('companies.id'), index=True)
 
 
-# ===================================================================
-# Z-Отчёт
-# ===================================================================
-
 class ZReport(Base):
-    """Z-отчёт: сводная статистика за день"""
     __tablename__ = 'z_reports'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    report_date = Column(String, nullable=False, index=True)
+    report_date = Column(Date, nullable=False, index=True)
 
     clients = Column(Integer)
     clients_average = Column(Float)
@@ -398,20 +350,15 @@ class ZReport(Base):
 
 
 class ZReportPayment(Base):
-    """Детализация оплат Z-отчёта"""
     __tablename__ = 'z_report_payments'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    report_date = Column(String, nullable=False, index=True)
+    report_date = Column(Date, nullable=False, index=True)
     payment_group = Column(String, nullable=False, index=True)
     title = Column(String)
     amount = Column(Float)
     company_id = Column(Integer, ForeignKey('companies.id'), index=True)
 
-
-# ===================================================================
-# Состояние синхронизации
-# ===================================================================
 
 class SyncState(Base):
     __tablename__ = 'sync_state'
@@ -419,7 +366,7 @@ class SyncState(Base):
 
     key = Column(String, primary_key=True)
     value = Column(String)
-    updated_at = Column(String, index=True)
+    updated_at = Column(DateTime, index=True)
 
 
 class SyncRun(Base):
@@ -431,8 +378,8 @@ class SyncRun(Base):
     mode = Column(String, nullable=False, index=True)
     status = Column(String, nullable=False, index=True)
     initiator = Column(String)
-    started_at = Column(String, nullable=False, index=True)
-    finished_at = Column(String, index=True)
+    started_at = Column(DateTime, nullable=False, index=True)
+    finished_at = Column(DateTime, index=True)
     log_path = Column(String)
     message = Column(Text)
 
@@ -447,4 +394,19 @@ class SyncStepRun(Base):
     step_key = Column(String, index=True)
     status = Column(String, nullable=False, index=True)
     elapsed_seconds = Column(Float)
-    created_at = Column(String, nullable=False, index=True)
+    created_at = Column(DateTime, nullable=False, index=True)
+
+
+class SyncJob(Base):
+    __tablename__ = 'sync_jobs'
+    __table_args__ = {'schema': SYSTEM_SCHEMA}
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    mode = Column(String, nullable=False, index=True)
+    initiator = Column(String)
+    status = Column(String, nullable=False, index=True)
+    requested_at = Column(DateTime, nullable=False, index=True)
+    started_at = Column(DateTime, index=True)
+    finished_at = Column(DateTime, index=True)
+    run_id = Column(Integer, ForeignKey(f'{SYSTEM_SCHEMA}.sync_runs.id'), index=True)
+    error_message = Column(Text)
