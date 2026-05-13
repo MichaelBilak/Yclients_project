@@ -86,6 +86,7 @@ if _cors_origins:
         allow_credentials=True,
         allow_methods=['*'],
         allow_headers=['*'],
+        allow_private_network=True,
     )
 
 app.include_router(dashboard_router, prefix='/dashboard', tags=['dashboard'])
