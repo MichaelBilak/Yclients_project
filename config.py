@@ -82,6 +82,7 @@ API_KEY = os.getenv('API_KEY', '')
 
 # Comma-separated origins for dashboard SPA (e.g. Vercel preview). Empty = no CORS middleware.
 DASHBOARD_CORS_ORIGINS = os.getenv('DASHBOARD_CORS_ORIGINS', '')
+DASHBOARD_CORS_ORIGIN_REGEX = os.getenv('DASHBOARD_CORS_ORIGIN_REGEX', '')
 
 # ============================================================================
 # Уведомления

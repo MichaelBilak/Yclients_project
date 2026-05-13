@@ -20,6 +20,7 @@ from config import (
     API_HOST,
     API_KEY,
     API_PORT,
+    DASHBOARD_CORS_ORIGIN_REGEX,
     DASHBOARD_CORS_ORIGINS,
     DB_HOST,
     DB_NAME,
@@ -83,6 +84,7 @@ if _cors_origins:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=_cors_origins,
+        allow_origin_regex=DASHBOARD_CORS_ORIGIN_REGEX or None,
         allow_credentials=True,
         allow_methods=['*'],
         allow_headers=['*'],
