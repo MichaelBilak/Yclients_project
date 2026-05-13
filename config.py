@@ -80,6 +80,9 @@ API_HOST = os.getenv('API_HOST', '0.0.0.0')
 API_PORT = _get_int('API_PORT', 8000)
 API_KEY = os.getenv('API_KEY', '')
 
+# Comma-separated origins for dashboard SPA (e.g. Vercel preview). Empty = no CORS middleware.
+DASHBOARD_CORS_ORIGINS = os.getenv('DASHBOARD_CORS_ORIGINS', '')
+
 # ============================================================================
 # Уведомления
 # ============================================================================

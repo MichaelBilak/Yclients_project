@@ -10,6 +10,7 @@
 - `main.py` - ручной CLI-запуск синхронизации
 - `migrate.py` - применение Alembic миграций
 - `setup_analytics.py` - создание аналитических `views` в PostgreSQL
+- `dashboard_service.py` / `dashboard_routes.py` — агрегаты для продуктового дашборда (JSON, без Metabase)
 - `docker-compose.yml` - локальный запуск `api`, `worker`, PostgreSQL и Metabase
 - `sync.sh` - ручной запуск one-shot sync через Docker Compose
 
@@ -21,7 +22,25 @@
 - Alembic
 - PostgreSQL
 - Docker Compose
-- Metabase
+- Metabase (опционально, для внутренней BI; клиентский дашборд — через `web/` + `/dashboard/*`)
+
+## Продуктовый дашборд (JSON + превью на Vercel)
+
+- **API:** `GET /dashboard/bundle?start_date=&end_date=` — сводка, выручка по дням, топ услуг; отдельные виджеты: `/dashboard/widget/summary`, `revenue_daily`, `top_services`, `sync_status`; `GET /dashboard/branches` — список компаний (филиалов), с фильтром по `system.portal_branches` после миграции `0004`.
+- **CORS для SPA:** в `.env` задайте `DASHBOARD_CORS_ORIGINS=https://your-app.vercel.app` (через запятую, если несколько origin).
+- **Фронт:** каталог [`web/`](web/) — Vite + Chart.js. Локально: `cd web && npm install && npm run dev` (прокси `/dashboard` на `127.0.0.1:8000` в `vite.config.js`).
+- **Vercel:** в проекте Vercel укажите **Root Directory** = `web`, переменные `VITE_API_BASE`, при необходимости `VITE_API_KEY` только для демо; на API включите `DASHBOARD_CORS_ORIGINS` под домен превью.
+
+## Metabase
+
+Сервис в `docker-compose` остаётся **удобным BI для команды** (ad-hoc SQL к тем же views). Для продуктового кабинета он не обязателен: см. `nginx/README.md` и пример разнесения `nginx.portal.sample.conf`. На production без Metabase можно удалить сервис `metabase` из compose и зависимость `nginx` от него, оставив только API и статику портала.
+
+## Production (VPS)
+
+1. VPS с Docker; `docker compose up -d postgres api worker` (+ `nginx` с профилем `prod`, SSL).
+2. DNS **A** на IP; Let's Encrypt (см. `nginx/nginx.conf`).
+3. Секреты только в `.env` на сервере; PostgreSQL не публиковать в интернет.
+4. Подробнее по разнесению доменов: [`nginx/README.md`](nginx/README.md).
 
 ## Быстрый старт
 
@@ -117,7 +136,7 @@ curl http://127.0.0.1:8000/health
 Локальные unit/API тесты:
 
 ```bash
-pytest tests/test_sync_parsing.py tests/test_api.py
+pytest tests/test_sync_parsing.py tests/test_api.py tests/test_dashboard_api.py
 ```
 
 Postgres integration tests:
@@ -132,3 +151,4 @@ pytest tests/test_postgres_integration.py
 - предметные BI-таблицы пересобираются миграциями и последующим full sync
 - `system.*` таблицы состояния и истории запусков сохраняются отдельно
 - datasource в Metabase не provision-ится автоматически; PostgreSQL с views готов для ручного подключения через UI
+- миграция `0004_portal_branches` добавляет `system.portal_accounts` / `portal_branches` для будущего мультифилиального портала (пока список филиалов = все `companies`, пока нет строк в `portal_branches`)

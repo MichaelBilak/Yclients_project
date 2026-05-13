@@ -1,0 +1,127 @@
+"""Dashboard JSON API (product portal metrics)."""
+
+from datetime import date, datetime
+
+import pytest
+from httpx import ASGITransport, AsyncClient
+
+import api
+from api import app
+from models import Appointment, Client, Company, Group, Staff, Transaction
+
+
+@pytest.mark.asyncio
+async def test_dashboard_bundle_requires_api_key(async_session, monkeypatch):
+    monkeypatch.setattr(api, 'API_KEY', 'k')
+
+    async def override_db():
+        yield async_session
+
+    app.dependency_overrides[api.get_async_db] = override_db
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url='http://test') as client:
+        r = await client.get(
+            '/dashboard/bundle',
+            params={'start_date': '2025-01-01', 'end_date': '2025-01-31'},
+        )
+        assert r.status_code == 401
+        r2 = await client.get(
+            '/dashboard/bundle',
+            params={'start_date': '2025-01-01', 'end_date': '2025-01-31'},
+            headers={'X-API-Key': 'k'},
+        )
+        assert r2.status_code == 200
+        body = r2.json()
+        assert body['success'] is True
+        assert 'summary' in body['data']
+        assert 'revenue_daily' in body['data']
+        assert 'top_services' in body['data']
+
+    app.dependency_overrides.clear()
+    monkeypatch.setattr(api, 'API_KEY', '')
+
+
+@pytest.mark.asyncio
+async def test_dashboard_summary_revenue_and_change(async_session):
+    async_session.add(Group(id=1, title='G1'))
+    async_session.add(Company(id=1, title='Salon', group_id=1))
+    async_session.add(Staff(id=1, name='Master', company_id=1))
+    async_session.add(Client(id=1, name='Client', company_id=1, visits_count=1, last_visit_date=date(2025, 1, 10)))
+    await async_session.flush()
+    async_session.add_all([
+        Appointment(
+            id=1,
+            company_id=1,
+            staff_id=1,
+            client_id=1,
+            date=date(2025, 1, 10),
+            datetime=datetime(2025, 1, 10, 12, 0, 0),
+            create_date=datetime(2025, 1, 9, 12, 0, 0),
+            seance_length=3600,
+            attendance=1,
+        ),
+        Appointment(
+            id=2,
+            company_id=1,
+            staff_id=1,
+            client_id=1,
+            date=date(2024, 12, 20),
+            datetime=datetime(2024, 12, 20, 12, 0, 0),
+            create_date=datetime(2024, 12, 19, 12, 0, 0),
+            seance_length=3600,
+            attendance=1,
+        ),
+    ])
+    await async_session.flush()
+    async_session.add_all([
+        Transaction(id=1, appointment_id=1, service_id=10, service_title='Cut', cost=1000.0, first_cost=1000.0, amount=1, company_id=1),
+        Transaction(id=2, appointment_id=2, service_id=10, service_title='Cut', cost=500.0, first_cost=500.0, amount=1, company_id=1),
+    ])
+    await async_session.commit()
+
+    async def override_db():
+        yield async_session
+
+    app.dependency_overrides[api.get_async_db] = override_db
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url='http://test') as client:
+        r = await client.get(
+            '/dashboard/widget/summary',
+            params={'start_date': '2025-01-01', 'end_date': '2025-01-31'},
+        )
+    app.dependency_overrides.clear()
+
+    assert r.status_code == 200
+    data = r.json()['data']
+    assert data['revenue']['total'] == 1000.0
+    assert data['revenue']['change_pct'] == 100.0
+    assert data['appointments_breakdown']['attended'] == 1
+
+
+@pytest.mark.asyncio
+async def test_dashboard_branches_respects_portal_allowlist(async_session, monkeypatch):
+    import dashboard_service
+
+    async_session.add(Group(id=1, title='G'))
+    async_session.add(Company(id=1, title='A', group_id=1))
+    async_session.add(Company(id=2, title='B', group_id=1))
+    await async_session.commit()
+
+    async def fake_ids(_db):
+        return [2]
+
+    monkeypatch.setattr(dashboard_service, 'branch_company_ids', fake_ids)
+
+    async def override_db():
+        yield async_session
+
+    app.dependency_overrides[api.get_async_db] = override_db
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url='http://test') as client:
+        r = await client.get('/dashboard/branches')
+    app.dependency_overrides.clear()
+
+    assert r.status_code == 200
+    rows = r.json()['data']
+    assert len(rows) == 1
+    assert rows[0]['id'] == 2

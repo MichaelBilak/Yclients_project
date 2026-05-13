@@ -10,6 +10,7 @@ from decimal import Decimal
 from typing import Any, Callable, Literal, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import func, select
@@ -19,6 +20,7 @@ from config import (
     API_HOST,
     API_KEY,
     API_PORT,
+    DASHBOARD_CORS_ORIGINS,
     DB_HOST,
     DB_NAME,
     DB_PASSWORD,
@@ -26,6 +28,7 @@ from config import (
     DB_USER,
     SYNC_API_TOKEN,
 )
+from dashboard_routes import router as dashboard_router
 from database import get_async_db, init_async_database
 from models import (
     Account,
@@ -74,6 +77,18 @@ app = FastAPI(
     version="5.0.0",
     dependencies=[Depends(require_api_key)],
 )
+
+_cors_origins = [o.strip() for o in DASHBOARD_CORS_ORIGINS.split(',') if o.strip()]
+if _cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins,
+        allow_credentials=True,
+        allow_methods=['*'],
+        allow_headers=['*'],
+    )
+
+app.include_router(dashboard_router, prefix='/dashboard', tags=['dashboard'])
 
 
 def require_sync_token(x_sync_token: str | None = Header(default=None)):
@@ -145,6 +160,9 @@ async def root():
             "/sync/trigger": "Поставить sync в очередь",
             "/sync/status": "Статус sync и очереди",
             "/export/csv/{table}": "Экспорт таблицы в CSV",
+            "/dashboard/branches": "Филиалы (компании) для портала",
+            "/dashboard/bundle": "Сводка дашборда за период (JSON)",
+            "/dashboard/widget/sync_status": "Статус синка для UI",
         },
     }
 

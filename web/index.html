@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>YClients — дашборд (превью)</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 1.5rem; max-width: 960px; }
+    h1 { font-size: 1.25rem; }
+    .row { display: flex; gap: 1rem; flex-wrap: wrap; align-items: end; margin-bottom: 1rem; }
+    label { display: flex; flex-direction: column; font-size: 0.85rem; gap: 0.25rem; }
+    button { padding: 0.5rem 1rem; cursor: pointer; }
+    .kpi { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 1rem; margin: 1rem 0; }
+    .card { border: 1px solid #e5e7eb; border-radius: 8px; padding: 1rem; }
+    .card h3 { margin: 0 0 0.5rem; font-size: 0.7rem; text-transform: uppercase; color: #64748b; }
+    .card .v { font-size: 1.5rem; font-weight: 600; }
+    .muted { color: #64748b; font-size: 0.85rem; }
+    #chart { max-height: 320px; }
+    .warn { background: #fffbeb; border: 1px solid #fcd34d; padding: 0.75rem; border-radius: 8px; font-size: 0.9rem; }
+  </style>
+</head>
+<body>
+  <h1>Дашборд (превью для заказчика)</h1>
+  <p class="muted">Данные с <code>/dashboard/bundle</code>. Для Vercel задайте <code>VITE_API_BASE</code> и CORS на API (<code>DASHBOARD_CORS_ORIGINS</code>).</p>
+  <div class="warn">Не встраивайте production API-ключ в публичный фронт; для демо используйте отдельный ключ, туннель или моки.</div>
+  <div class="row">
+    <label>С <input type="date" id="start" /></label>
+    <label>По <input type="date" id="end" /></label>
+    <button type="button" id="load">Загрузить</button>
+  </div>
+  <div class="kpi" id="kpi"></div>
+  <div class="card"><h3>Выручка по дням</h3><canvas id="chart"></canvas></div>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

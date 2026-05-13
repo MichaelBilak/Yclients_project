@@ -360,6 +360,28 @@ class ZReportPayment(Base):
     company_id = Column(Integer, ForeignKey('companies.id'), index=True)
 
 
+class PortalAccount(Base):
+    """Logical owner account for the product portal (future multi-tenant)."""
+
+    __tablename__ = 'portal_accounts'
+    __table_args__ = {'schema': SYSTEM_SCHEMA}
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    label = Column(String(255), nullable=False, default='default')
+    created_at = Column(DateTime, nullable=False)
+
+
+class PortalBranch(Base):
+    """Maps a portal account to YClients companies (salon branches)."""
+
+    __tablename__ = 'portal_branches'
+    __table_args__ = {'schema': SYSTEM_SCHEMA}
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    portal_account_id = Column(Integer, ForeignKey(f'{SYSTEM_SCHEMA}.portal_accounts.id'), nullable=False)
+    company_id = Column(Integer, ForeignKey('companies.id'), nullable=False)
+
+
 class SyncState(Base):
     __tablename__ = 'sync_state'
     __table_args__ = {'schema': SYSTEM_SCHEMA}
