@@ -73,6 +73,21 @@ function formatPct(value) {
   return `${sign}${Number(value).toLocaleString('ru-RU')}% к прошлому периоду`;
 }
 
+function formatLocalDateTime(value) {
+  if (!value) return null;
+  const isoValue = /(?:Z|[+-]\d{2}:\d{2})$/.test(value) ? value : `${value}Z`;
+  const date = new Date(isoValue);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat('ru-RU', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  }).format(date);
+}
+
 function deltaClass(value) {
   if (value === null || value === undefined || value === 0) return '';
   return value > 0 ? 'up' : 'down';
@@ -354,7 +369,7 @@ async function loadSyncStatus() {
     const queue = payload.data?.queue;
     const parts = [];
     if (lastRun?.status) parts.push(`последний запуск: ${lastRun.status}`);
-    if (lastRun?.finished_at) parts.push(lastRun.finished_at.slice(0, 19).replace('T', ' '));
+    if (lastRun?.finished_at) parts.push(formatLocalDateTime(lastRun.finished_at));
     if (queue) parts.push(`очередь: ${queue.queued_jobs}, running: ${queue.running_jobs}`);
     els.syncState.textContent = parts.length ? `Синхронизация: ${parts.join(' · ')}` : 'Синхронизация: нет запусков';
   } catch {
