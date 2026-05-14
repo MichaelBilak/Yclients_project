@@ -91,8 +91,15 @@ def _parse_number(value: str) -> float | None:
         .replace(' ', '')
         .replace('%', '')
         .replace('₽', '')
-        .replace(',', '.')
     )
+    if ',' in normalized and '.' in normalized:
+        normalized = normalized.replace(',', '')
+    elif normalized.count(',') > 1:
+        normalized = normalized.replace(',', '')
+    elif re.fullmatch(r'-?\d{1,3},\d{3}', normalized):
+        normalized = normalized.replace(',', '')
+    else:
+        normalized = normalized.replace(',', '.')
     try:
         return float(normalized)
     except ValueError:

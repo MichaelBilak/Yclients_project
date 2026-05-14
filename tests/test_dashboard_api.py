@@ -282,3 +282,33 @@ async def test_plan_sheet_csv_imports_wide_branch_rows(async_session):
     ).scalars().all()
     values = {row.metric_code: row.value for row in rows}
     assert values == {'revenue': 10000.0, 'clients': 5.0, 'wax_qty': 2.0}
+
+
+@pytest.mark.asyncio
+async def test_plan_sheet_csv_imports_google_thousands_commas(async_session):
+    async_session.add(Group(id=1, title='G1'))
+    async_session.add(Company(id=1, title='Salon', group_id=1))
+    await async_session.commit()
+
+    result = await import_plan_sheet_csv(
+        async_session,
+        'month,company_id,Выручка,СЧ общий,Космо сумм.\n'
+        '2025-01,1,"2,156,400","3,655","138,000"\n',
+    )
+
+    assert result['imported'] == 3
+    rows = (
+        await async_session.execute(
+            select(PlanMetric).where(
+                PlanMetric.period_start == date(2025, 1, 1),
+                PlanMetric.period_end == date(2025, 1, 31),
+                PlanMetric.company_id == 1,
+            )
+        )
+    ).scalars().all()
+    values = {row.metric_code: row.value for row in rows}
+    assert values == {
+        'revenue': 2156400.0,
+        'avg_check_total': 3655.0,
+        'cosmo_sum': 138000.0,
+    }
