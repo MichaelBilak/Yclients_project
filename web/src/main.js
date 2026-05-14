@@ -156,9 +156,9 @@ async function fetchJson(path, params) {
 }
 
 function defaultDates() {
-  const end = new Date();
-  const start = new Date();
-  start.setDate(start.getDate() - 30);
+  const now = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth(), 1);
+  const end = new Date(now.getFullYear(), now.getMonth() + 1, 0);
   els.end.value = end.toISOString().slice(0, 10);
   els.start.value = start.toISOString().slice(0, 10);
 }
