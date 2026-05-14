@@ -978,6 +978,8 @@ def sync_goods_transactions(api: YClientsAPI, db, company_id: str,
             master = t.get('master') or {}
             client = t.get('client') or {}
 
+            tx_date = parse_datetime(t.get('create_date') or t.get('date'))
+
             if not obj:
                 obj = GoodTransaction(
                     id=tid,
@@ -992,6 +994,7 @@ def sync_goods_transactions(api: YClientsAPI, db, company_id: str,
                     master_id=master.get('id') if isinstance(master, dict) else None,
                     client_id=client.get('id') if isinstance(client, dict) else None,
                     company_id=cid,
+                    date=tx_date,
                 )
                 db.add(obj)
                 existing_txns[tid] = obj
@@ -1006,6 +1009,7 @@ def sync_goods_transactions(api: YClientsAPI, db, company_id: str,
                 obj.discount = t.get('discount')
                 obj.master_id = master.get('id') if isinstance(master, dict) else None
                 obj.client_id = client.get('id') if isinstance(client, dict) else None
+                obj.date = tx_date
 
         db.commit()
         print(f"  ✓ Товарные транзакции сохранены ({len(txns)} шт.)")

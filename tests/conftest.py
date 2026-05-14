@@ -15,6 +15,7 @@ from models import (
     GoodCategory,
     GoodTransaction,
     Group,
+    PlanMetric,
     Service,
     ServiceCategory,
     Staff,
@@ -44,7 +45,19 @@ PUBLIC_TABLES = [
     GoodTransaction.__table__,
     Comment.__table__,
     StaffSchedule.__table__,
+    PlanMetric.__table__,
 ]
+
+
+@pytest.fixture(autouse=True)
+def isolate_api_auth(monkeypatch):
+    """Keep tests independent from local .env API tokens."""
+    import api
+    import dashboard_routes
+
+    monkeypatch.setattr(api, 'API_KEY', '')
+    monkeypatch.setattr(api, 'SYNC_API_TOKEN', '')
+    monkeypatch.setattr(dashboard_routes, 'SYNC_API_TOKEN', '')
 
 
 @pytest_asyncio.fixture

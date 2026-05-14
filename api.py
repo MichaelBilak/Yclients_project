@@ -165,6 +165,8 @@ async def root():
             "/export/csv/{table}": "Экспорт таблицы в CSV",
             "/dashboard/branches": "Филиалы (компании) для портала",
             "/dashboard/bundle": "Сводка дашборда за период (JSON)",
+            "/dashboard/widget/plan_fact": "План/факт по филиалам за период",
+            "/dashboard/plan/sync": "Импорт плана из Google Sheets CSV",
             "/dashboard/widget/sync_status": "Статус синка для UI",
         },
     }
@@ -565,6 +567,7 @@ async def api_goods_transactions(
         "master_id": item.master_id,
         "client_id": item.client_id,
         "company_id": item.company_id,
+        "date": item.date.isoformat() if item.date else None,
     })
     return build_page_response(total, limit, offset, data)
 

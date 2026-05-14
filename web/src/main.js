@@ -16,7 +16,9 @@ const els = {
   revenueMeta: document.getElementById('revenue-meta'),
   appointmentsMeta: document.getElementById('appointments-meta'),
   servicesMeta: document.getElementById('services-meta'),
+  planMeta: document.getElementById('plan-meta'),
   tableMeta: document.getElementById('table-meta'),
+  planFactTable: document.getElementById('plan-fact-table'),
   servicesTable: document.getElementById('services-table'),
   revenueChart: document.getElementById('revenue-chart'),
   appointmentsChart: document.getElementById('appointments-chart'),
@@ -71,6 +73,13 @@ function formatPct(value) {
   if (value === null || value === undefined) return 'нет базы';
   const sign = value > 0 ? '+' : '';
   return `${sign}${Number(value).toLocaleString('ru-RU')}% к прошлому периоду`;
+}
+
+function formatMetricValue(value, format) {
+  if (value === null || value === undefined) return '—';
+  if (format === 'money') return formatMoney(value);
+  if (format === 'percent') return `${Number(value).toLocaleString('ru-RU', { maximumFractionDigits: 2 })}%`;
+  return formatNumber(value);
 }
 
 function formatLocalDateTime(value) {
@@ -331,9 +340,69 @@ function renderServicesTable(services) {
   `;
 }
 
+function renderPlanFact(planFact) {
+  const groups = planFact?.groups || [];
+  const metrics = planFact?.metrics || [];
+  if (!groups.length || !metrics.length) {
+    els.planFactTable.innerHTML = '<div class="empty">Нет плана за выбранный период</div>';
+    els.planMeta.textContent = '';
+    return;
+  }
+
+  const metricByCode = Object.fromEntries(metrics.map((metric) => [metric.code, metric]));
+  const rowTypes = [
+    ['plan', 'План'],
+    ['fact', 'Факт'],
+    ['remaining', 'Осталось'],
+    ['completion_pct', '% выполнения'],
+  ];
+
+  els.planFactTable.innerHTML = `
+    <div class="table-scroll">
+      <table class="plan-table">
+        <thead>
+          <tr>
+            <th>БШ</th>
+            <th>Показатель</th>
+            ${metrics.map((metric) => `<th class="number">${escapeHtml(metric.label)}</th>`).join('')}
+          </tr>
+        </thead>
+        <tbody>
+          ${groups
+            .map((group) =>
+              rowTypes
+                .map(([field, label], index) => `
+                  <tr>
+                    ${
+                      index === 0
+                        ? `<th class="branch-cell" rowspan="${rowTypes.length}">${escapeHtml(group.title)}</th>`
+                        : ''
+                    }
+                    <td class="row-label">${escapeHtml(label)}</td>
+                    ${(group.metrics || [])
+                      .map((cell) => {
+                        const metric = metricByCode[cell.code] || {};
+                        const format = field === 'completion_pct' ? 'percent' : metric.format;
+                        const statusClass = field === 'completion_pct' ? ` metric-status ${cell.status}` : '';
+                        return `<td class="number${statusClass}">${escapeHtml(formatMetricValue(cell[field], format))}</td>`;
+                      })
+                      .join('')}
+                  </tr>
+                `)
+                .join(''),
+            )
+            .join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+  els.planMeta.textContent = `${groups.length} блоков`;
+}
+
 function renderBundle(bundle) {
-  const { summary, revenue_daily: daily = [], top_services: services = [] } = bundle;
+  const { summary, revenue_daily: daily = [], top_services: services = [], plan_fact: planFact } = bundle;
   renderKpi(summary);
+  renderPlanFact(planFact);
   renderRevenueChart(daily);
   renderAppointmentsChart(daily);
   renderServicesChart(services.slice(0, 8));

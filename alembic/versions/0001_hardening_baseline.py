@@ -12,6 +12,7 @@ depends_on = None
 
 
 PUBLIC_TABLES = [
+    'plan_metrics',
     'z_report_payments',
     'z_reports',
     'analytics_record_statuses',

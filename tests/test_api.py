@@ -1,3 +1,5 @@
+from datetime import datetime
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 
@@ -121,7 +123,16 @@ async def test_csv_export_streams_rows(async_session):
 
 @pytest.mark.asyncio
 async def test_goods_transactions_endpoint_no_longer_depends_on_date_params(async_session):
-    async_session.add(GoodTransaction(id=10, company_id=9, type_id=1, amount=1.0, cost=1.0))
+    async_session.add(
+        GoodTransaction(
+            id=10,
+            company_id=9,
+            type_id=1,
+            amount=1.0,
+            cost=1.0,
+            date=datetime(2026, 1, 2, 3, 4, 5),
+        )
+    )
     await async_session.commit()
 
     async def override_db():
@@ -138,3 +149,4 @@ async def test_goods_transactions_endpoint_no_longer_depends_on_date_params(asyn
     payload = response.json()
     assert payload['total'] == 1
     assert payload['data'][0]['id'] == 10
+    assert payload['data'][0]['date'] == '2026-01-02T03:04:05'

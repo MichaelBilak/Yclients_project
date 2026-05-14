@@ -5,11 +5,19 @@ from __future__ import annotations
 import asyncio
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from dashboard_service import fetch_branches, fetch_revenue_daily, fetch_summary, fetch_top_services
+from config import SYNC_API_TOKEN
+from dashboard_service import (
+    fetch_branches,
+    fetch_plan_fact,
+    fetch_revenue_daily,
+    fetch_summary,
+    fetch_top_services,
+)
 from database import get_async_db
+from plan_import import import_plan_sheet_from_config
 from sync_jobs import SyncJobService
 from sync_orchestrator import get_sync_status
 
@@ -20,6 +28,11 @@ def _parse_range(start: date, end: date) -> tuple[date, date]:
     if start > end:
         raise HTTPException(status_code=400, detail='start_date must be <= end_date')
     return start, end
+
+
+def _require_sync_token(x_sync_token: str | None) -> None:
+    if SYNC_API_TOKEN and x_sync_token != SYNC_API_TOKEN:
+        raise HTTPException(status_code=401, detail='Invalid sync token')
 
 
 @router.get('/branches')
@@ -70,6 +83,26 @@ async def dashboard_widget_top_services(
     return {'success': True, 'data': await fetch_top_services(db, start, end, company_id, limit)}
 
 
+@router.get('/widget/plan_fact')
+async def dashboard_widget_plan_fact(
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+    company_id: int | None = Query(None),
+    db: AsyncSession = Depends(get_async_db),
+):
+    start, end = _parse_range(start_date, end_date)
+    return {'success': True, 'data': await fetch_plan_fact(db, start, end, company_id)}
+
+
+@router.post('/plan/sync')
+async def dashboard_plan_sync(
+    x_sync_token: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_async_db),
+):
+    _require_sync_token(x_sync_token)
+    return {'success': True, 'data': await import_plan_sheet_from_config(db)}
+
+
 @router.get('/bundle')
 async def dashboard_bundle(
     start_date: date = Query(...),
@@ -82,11 +115,13 @@ async def dashboard_bundle(
     summary = await fetch_summary(db, start, end, company_id)
     daily = await fetch_revenue_daily(db, start, end, company_id)
     services = await fetch_top_services(db, start, end, company_id, 10)
+    plan_fact = await fetch_plan_fact(db, start, end, company_id)
     return {
         'success': True,
         'data': {
             'summary': summary,
             'revenue_daily': daily,
             'top_services': services,
+            'plan_fact': plan_fact,
         },
     }

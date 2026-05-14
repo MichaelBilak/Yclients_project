@@ -8,38 +8,85 @@ from database import init_database
 
 VIEWS = [
     # ----------------------------------------------------------------
-    # 1. Выручка по дням
+    # 1. Выручка по дням (услуги по записям + товарные реализации)
     # ----------------------------------------------------------------
     """
     CREATE OR REPLACE VIEW v_revenue_daily AS
+    WITH revenue_lines AS (
+        SELECT
+            a.date::date                                AS line_date,
+            a.client_id                                 AS client_id,
+            a.id                                        AS appointment_id,
+            COALESCE(t.cost * t.amount, 0)              AS revenue,
+            COALESCE(t.first_cost * t.amount, 0)        AS revenue_before_discount,
+            'service'::text                             AS source
+        FROM appointments a
+        LEFT JOIN transactions t ON t.appointment_id = a.id
+        WHERE a.attendance > 0
+        UNION ALL
+        SELECT
+            COALESCE(gt.date::date, ft.date::date)      AS line_date,
+            gt.client_id                                AS client_id,
+            NULL::int                                   AS appointment_id,
+            COALESCE(gt.cost, 0)                        AS revenue,
+            COALESCE(gt.cost, 0)                        AS revenue_before_discount,
+            'goods'::text                               AS source
+        FROM goods_transactions gt
+        LEFT JOIN financial_transactions ft
+            ON  ft.sold_item_type = 'goods_transaction'
+            AND ft.sold_item_id   = gt.id
+        WHERE gt.type_id = 1
+    )
     SELECT
-        a.date                                          AS visit_date,
-        COUNT(DISTINCT a.id)                            AS appointments_count,
-        COALESCE(SUM(t.cost * t.amount), 0)             AS revenue,
-        COALESCE(SUM(t.first_cost * t.amount), 0)       AS revenue_before_discount,
-        COUNT(DISTINCT a.client_id)                     AS unique_clients
-    FROM appointments a
-    LEFT JOIN transactions t ON t.appointment_id = a.id
-    WHERE a.attendance > 0
-    GROUP BY a.date
-    ORDER BY a.date ASC
+        line_date                                       AS visit_date,
+        COUNT(DISTINCT appointment_id)                  AS appointments_count,
+        COALESCE(SUM(revenue), 0)                       AS revenue,
+        COALESCE(SUM(revenue_before_discount) FILTER (WHERE source = 'service'), 0) AS revenue_before_discount,
+        COUNT(DISTINCT client_id)                       AS unique_clients,
+        COALESCE(SUM(revenue) FILTER (WHERE source = 'service'), 0) AS service_revenue,
+        COALESCE(SUM(revenue) FILTER (WHERE source = 'goods'),   0) AS goods_revenue
+    FROM revenue_lines
+    WHERE line_date IS NOT NULL
+    GROUP BY line_date
+    ORDER BY line_date ASC
     """,
 
     # ----------------------------------------------------------------
-    # 2. Выручка по сотрудникам
+    # 2. Выручка по сотрудникам (услуги + товары)
     # ----------------------------------------------------------------
     """
     CREATE OR REPLACE VIEW v_revenue_by_staff AS
+    WITH revenue_lines AS (
+        SELECT
+            a.staff_id                                  AS staff_id,
+            a.client_id                                 AS client_id,
+            a.id                                        AS appointment_id,
+            COALESCE(t.cost * t.amount, 0)              AS revenue,
+            'service'::text                             AS source
+        FROM appointments a
+        LEFT JOIN transactions t ON t.appointment_id = a.id
+        WHERE a.attendance > 0
+        UNION ALL
+        SELECT
+            gt.master_id                                AS staff_id,
+            gt.client_id                                AS client_id,
+            NULL::int                                   AS appointment_id,
+            COALESCE(gt.cost, 0)                        AS revenue,
+            'goods'::text                               AS source
+        FROM goods_transactions gt
+        WHERE gt.type_id = 1
+    )
     SELECT
         s.id                                            AS staff_id,
         s.name                                          AS staff_name,
         s.position                                      AS staff_position,
-        COUNT(DISTINCT a.id)                            AS appointments_count,
-        COUNT(DISTINCT a.client_id)                     AS unique_clients,
-        COALESCE(SUM(t.cost * t.amount), 0)             AS revenue
+        COUNT(DISTINCT rl.appointment_id)               AS appointments_count,
+        COUNT(DISTINCT rl.client_id)                    AS unique_clients,
+        COALESCE(SUM(rl.revenue), 0)                    AS revenue,
+        COALESCE(SUM(rl.revenue) FILTER (WHERE rl.source = 'service'), 0) AS service_revenue,
+        COALESCE(SUM(rl.revenue) FILTER (WHERE rl.source = 'goods'),   0) AS goods_revenue
     FROM staff s
-    LEFT JOIN appointments a ON a.staff_id = s.id AND a.attendance > 0
-    LEFT JOIN transactions t ON t.appointment_id = a.id
+    LEFT JOIN revenue_lines rl ON rl.staff_id = s.id
     GROUP BY s.id, s.name, s.position
     ORDER BY revenue DESC
     """,
@@ -78,10 +125,28 @@ VIEWS = [
     """,
 
     # ----------------------------------------------------------------
-    # 5. Клиентская аналитика
+    # 5. Клиентская аналитика (траты: услуги + товары)
     # ----------------------------------------------------------------
     """
     CREATE OR REPLACE VIEW v_client_analytics AS
+    WITH service_spent AS (
+        SELECT
+            a.client_id                                 AS client_id,
+            COUNT(DISTINCT a.id)                        AS appointments_count,
+            COALESCE(SUM(t.cost * t.amount), 0)         AS revenue
+        FROM appointments a
+        LEFT JOIN transactions t ON t.appointment_id = a.id
+        WHERE a.attendance > 0
+        GROUP BY a.client_id
+    ),
+    goods_spent AS (
+        SELECT
+            gt.client_id                                AS client_id,
+            COALESCE(SUM(gt.cost), 0)                   AS revenue
+        FROM goods_transactions gt
+        WHERE gt.type_id = 1
+        GROUP BY gt.client_id
+    )
     SELECT
         c.id                                            AS client_id,
         c.name                                          AS client_name,
@@ -89,35 +154,60 @@ VIEWS = [
         c.visits_count,
         c.last_visit_date,
         c.discount,
-        COUNT(DISTINCT a.id)                            AS total_appointments,
-        COALESCE(SUM(t.cost * t.amount), 0)             AS total_spent,
+        COALESCE(ss.appointments_count, 0)              AS total_appointments,
+        COALESCE(ss.revenue, 0) + COALESCE(gs.revenue, 0) AS total_spent,
         CASE
-            WHEN COUNT(DISTINCT a.id) >= 10 THEN 'VIP'
-            WHEN COUNT(DISTINCT a.id) >= 5  THEN 'Постоянный'
-            WHEN COUNT(DISTINCT a.id) >= 2  THEN 'Повторный'
+            WHEN COALESCE(ss.appointments_count, 0) >= 10 THEN 'VIP'
+            WHEN COALESCE(ss.appointments_count, 0) >= 5  THEN 'Постоянный'
+            WHEN COALESCE(ss.appointments_count, 0) >= 2  THEN 'Повторный'
             ELSE 'Новый'
-        END                                             AS client_segment
+        END                                             AS client_segment,
+        COALESCE(ss.revenue, 0)                         AS service_spent,
+        COALESCE(gs.revenue, 0)                         AS goods_spent
     FROM clients c
-    LEFT JOIN appointments a ON a.client_id = c.id AND a.attendance > 0
-    LEFT JOIN transactions t ON t.appointment_id = a.id
-    GROUP BY c.id, c.name, c.phone, c.visits_count, c.last_visit_date, c.discount
+    LEFT JOIN service_spent ss ON ss.client_id = c.id
+    LEFT JOIN goods_spent   gs ON gs.client_id = c.id
     ORDER BY total_spent DESC
     """,
 
     # ----------------------------------------------------------------
-    # 6. Выручка по месяцам
+    # 6. Выручка по месяцам (услуги + товары)
     # ----------------------------------------------------------------
     """
     CREATE OR REPLACE VIEW v_revenue_monthly AS
+    WITH revenue_lines AS (
+        SELECT
+            TO_CHAR(a.date, 'YYYY-MM')                  AS month,
+            a.client_id                                 AS client_id,
+            a.id                                        AS appointment_id,
+            COALESCE(t.cost * t.amount, 0)              AS revenue,
+            'service'::text                             AS source
+        FROM appointments a
+        LEFT JOIN transactions t ON t.appointment_id = a.id
+        WHERE a.attendance > 0
+        UNION ALL
+        SELECT
+            TO_CHAR(COALESCE(gt.date, ft.date), 'YYYY-MM') AS month,
+            gt.client_id                                AS client_id,
+            NULL::int                                   AS appointment_id,
+            COALESCE(gt.cost, 0)                        AS revenue,
+            'goods'::text                               AS source
+        FROM goods_transactions gt
+        LEFT JOIN financial_transactions ft
+            ON  ft.sold_item_type = 'goods_transaction'
+            AND ft.sold_item_id   = gt.id
+        WHERE gt.type_id = 1
+    )
     SELECT
-        TO_CHAR(a.date, 'YYYY-MM')                      AS month,
-        COUNT(DISTINCT a.id)                            AS appointments_count,
-        COUNT(DISTINCT a.client_id)                     AS unique_clients,
-        COALESCE(SUM(t.cost * t.amount), 0)             AS revenue
-    FROM appointments a
-    LEFT JOIN transactions t ON t.appointment_id = a.id
-    WHERE a.attendance > 0
-    GROUP BY TO_CHAR(a.date, 'YYYY-MM')
+        month,
+        COUNT(DISTINCT appointment_id)                  AS appointments_count,
+        COUNT(DISTINCT client_id)                       AS unique_clients,
+        COALESCE(SUM(revenue), 0)                       AS revenue,
+        COALESCE(SUM(revenue) FILTER (WHERE source = 'service'), 0) AS service_revenue,
+        COALESCE(SUM(revenue) FILTER (WHERE source = 'goods'),   0) AS goods_revenue
+    FROM revenue_lines
+    WHERE month IS NOT NULL
+    GROUP BY month
     ORDER BY month ASC
     """,
 
@@ -526,7 +616,8 @@ VIEWS = [
         gt.amount,
         gt.cost_per_unit,
         gt.cost,
-        gt.discount
+        gt.discount,
+        gt.date                                         AS transaction_date
     FROM goods_transactions gt
     LEFT JOIN companies c ON c.id = gt.company_id
     LEFT JOIN goods g ON g.good_id = gt.good_id

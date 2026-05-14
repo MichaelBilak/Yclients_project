@@ -84,6 +84,9 @@ API_KEY = os.getenv('API_KEY', '')
 DASHBOARD_CORS_ORIGINS = os.getenv('DASHBOARD_CORS_ORIGINS', '')
 DASHBOARD_CORS_ORIGIN_REGEX = os.getenv('DASHBOARD_CORS_ORIGIN_REGEX', '')
 
+# Published Google Sheets CSV URL with branch plan values for /dashboard/widget/plan_fact.
+PLAN_SHEET_CSV_URL = os.getenv('PLAN_SHEET_CSV_URL', '')
+
 # ============================================================================
 # Уведомления
 # ============================================================================

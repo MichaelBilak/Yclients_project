@@ -10,6 +10,7 @@ from sqlalchemy import (
     String,
     Text,
     Time,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import declarative_base, relationship
 
@@ -215,6 +216,7 @@ class GoodTransaction(Base):
     master_id = Column(Integer, index=True)
     client_id = Column(Integer, index=True)
     company_id = Column(Integer, ForeignKey('companies.id'), index=True)
+    date = Column(DateTime, index=True)
 
 
 class Comment(Base):
@@ -358,6 +360,30 @@ class ZReportPayment(Base):
     title = Column(String)
     amount = Column(Float)
     company_id = Column(Integer, ForeignKey('companies.id'), index=True)
+
+
+class PlanMetric(Base):
+    """Manually maintained branch plan values for plan-vs-fact dashboards."""
+
+    __tablename__ = 'plan_metrics'
+    __table_args__ = (
+        UniqueConstraint(
+            'period_start',
+            'period_end',
+            'company_id',
+            'metric_code',
+            name='uq_plan_metric_period_company_metric',
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    period_start = Column(Date, nullable=False, index=True)
+    period_end = Column(Date, nullable=False, index=True)
+    company_id = Column(Integer, ForeignKey('companies.id'), nullable=False, index=True)
+    metric_code = Column(String, nullable=False, index=True)
+    value = Column(Float, nullable=False)
+    source = Column(String, default='manual')
+    updated_at = Column(DateTime, nullable=False)
 
 
 class PortalAccount(Base):
