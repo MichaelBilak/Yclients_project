@@ -237,10 +237,15 @@ async def test_dashboard_plan_fact_uses_plan_and_fact_formulas(async_session):
             '/dashboard/widget/plan_fact',
             params={'start_date': '2025-01-01', 'end_date': '2025-01-31', 'company_id': 1},
         )
+        r_partial = await client.get(
+            '/dashboard/widget/plan_fact',
+            params={'start_date': '2025-01-15', 'end_date': '2025-01-20', 'company_id': 1},
+        )
     app.dependency_overrides.clear()
 
     assert r.status_code == 200
     data = r.json()['data']
+    assert data['plan_period'] == {'start': '2025-01-01', 'end': '2025-01-31'}
     assert data['groups'][0]['title'] == 'Salon'
 
     cells = {cell['code']: cell for cell in data['groups'][0]['metrics']}
@@ -256,6 +261,14 @@ async def test_dashboard_plan_fact_uses_plan_and_fact_formulas(async_session):
     assert cells['opz_qty']['fact'] == 1.0
     assert cells['opz_pct']['fact'] == 100.0
     assert cells['extra_services_pct']['fact'] == 300.0
+
+    assert r_partial.status_code == 200
+    partial_data = r_partial.json()['data']
+    assert partial_data['period'] == {'start': '2025-01-15', 'end': '2025-01-20'}
+    assert partial_data['plan_period'] == {'start': '2025-01-01', 'end': '2025-01-31'}
+    partial_cells = {cell['code']: cell for cell in partial_data['groups'][0]['metrics']}
+    assert partial_cells['revenue']['plan'] == 7000.0
+    assert partial_cells['revenue']['fact'] == 0.0
 
 
 @pytest.mark.asyncio

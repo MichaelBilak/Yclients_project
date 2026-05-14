@@ -556,6 +556,41 @@ async def _plan_metric_components_by_company(
     }
 
 
+async def _resolve_plan_period(
+    db: AsyncSession,
+    start: date,
+    end: date,
+    company_ids: list[int],
+) -> tuple[date, date]:
+    if not company_ids:
+        return start, end
+
+    exact_count = await db.scalar(
+        select(func.count())
+        .select_from(PlanMetric)
+        .where(
+            PlanMetric.period_start == start,
+            PlanMetric.period_end == end,
+            PlanMetric.company_id.in_(company_ids),
+        )
+    )
+    if exact_count:
+        return start, end
+
+    row = (
+        await db.execute(
+            select(PlanMetric.period_start, PlanMetric.period_end)
+            .where(PlanMetric.company_id.in_(company_ids))
+            .group_by(PlanMetric.period_start, PlanMetric.period_end)
+            .order_by(PlanMetric.period_start.desc(), PlanMetric.period_end.desc())
+            .limit(1)
+        )
+    ).first()
+    if row:
+        return row.period_start, row.period_end
+    return start, end
+
+
 def _metric_cells(plan_values: dict[str, float], fact_values: dict[str, float]) -> list[dict[str, Any]]:
     cells = []
     for metric in PLAN_FACT_METRICS:
@@ -591,7 +626,8 @@ async def fetch_plan_fact(
         branches = [branch for branch in branches if branch['id'] == company_id]
 
     company_ids = [int(branch['id']) for branch in branches]
-    plans_by_company = await _plan_metric_components_by_company(db, start, end, company_ids)
+    plan_start, plan_end = await _resolve_plan_period(db, start, end, company_ids)
+    plans_by_company = await _plan_metric_components_by_company(db, plan_start, plan_end, company_ids)
 
     facts_by_company: dict[int, dict[str, float]] = {}
     for branch_id in company_ids:
@@ -622,6 +658,7 @@ async def fetch_plan_fact(
 
     return {
         'period': {'start': start.isoformat(), 'end': end.isoformat()},
+        'plan_period': {'start': plan_start.isoformat(), 'end': plan_end.isoformat()},
         'metrics': list(PLAN_FACT_METRICS),
         'groups': groups,
     }

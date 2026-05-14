@@ -158,9 +158,15 @@ async function fetchJson(path, params) {
 function defaultDates() {
   const now = new Date();
   const start = new Date(now.getFullYear(), now.getMonth(), 1);
-  const end = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-  els.end.value = end.toISOString().slice(0, 10);
-  els.start.value = start.toISOString().slice(0, 10);
+  els.end.value = formatInputDate(now);
+  els.start.value = formatInputDate(start);
+}
+
+function formatInputDate(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
 function renderKpi(summary) {
@@ -396,7 +402,9 @@ function renderPlanFact(planFact) {
       </table>
     </div>
   `;
-  els.planMeta.textContent = `${groups.length} блоков`;
+  const planPeriod = planFact?.plan_period;
+  const planPeriodText = planPeriod ? ` · план ${planPeriod.start} .. ${planPeriod.end}` : '';
+  els.planMeta.textContent = `${groups.length} блоков${planPeriodText}`;
 }
 
 function renderBundle(bundle) {
