@@ -486,6 +486,8 @@ def sync_staff(api: YClientsAPI, db, company_id: str):
             elif isinstance(pos, str):
                 position_title = pos
 
+            user_id = s.get('user_id')
+
             obj = existing_staff.get(staff_id)
             if not obj:
                 obj = Staff(
@@ -496,6 +498,7 @@ def sync_staff(api: YClientsAPI, db, company_id: str):
                     rating=s.get('rating'),
                     votes_count=s.get('votes_count'),
                     bookable=s.get('bookable', True),
+                    user_id=user_id,
                     company_id=cid,
                 )
                 db.add(obj)
@@ -507,6 +510,7 @@ def sync_staff(api: YClientsAPI, db, company_id: str):
                 obj.rating = s.get('rating')
                 obj.votes_count = s.get('votes_count')
                 obj.bookable = s.get('bookable', True)
+                obj.user_id = user_id
 
         db.commit()
         print(f"  ✓ Сотрудники сохранены ({len(staff_list)} шт.)")
@@ -813,12 +817,14 @@ def sync_records(api: YClientsAPI, db, company_id: str,
             client_data = r.get('client') or {}
             client_id = client_data.get('id')
             staff_id = r.get('staff_id')
+            created_user_id = r.get('created_user_id')
 
             obj = existing_records.get(record_id)
             if not obj:
                 obj = Appointment(
                     id=record_id, company_id=cid,
                     staff_id=staff_id, client_id=client_id,
+                    created_user_id=created_user_id,
                     date=parse_date(r.get('date')),
                     datetime=parse_datetime(r.get('datetime')),
                     create_date=parse_datetime(r.get('create_date')),
@@ -830,6 +836,7 @@ def sync_records(api: YClientsAPI, db, company_id: str,
             else:
                 obj.staff_id = staff_id
                 obj.client_id = client_id
+                obj.created_user_id = created_user_id
                 obj.date = parse_date(r.get('date'))
                 obj.datetime = parse_datetime(r.get('datetime'))
                 obj.create_date = parse_datetime(r.get('create_date'))

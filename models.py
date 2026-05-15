@@ -84,6 +84,7 @@ class Staff(Base):
     rating = Column(Float)
     votes_count = Column(Integer)
     bookable = Column(Boolean, default=True)
+    user_id = Column(Integer, index=True)
     company_id = Column(Integer, ForeignKey('companies.id'), index=True)
 
     company = relationship("Company", back_populates="staff")
@@ -156,6 +157,7 @@ class Appointment(Base):
     company_id = Column(Integer, ForeignKey('companies.id'), index=True)
     staff_id = Column(Integer, index=True)
     client_id = Column(Integer, index=True)
+    created_user_id = Column(Integer, index=True)
     date = Column(Date, index=True)
     datetime = Column(DateTime)
     create_date = Column(DateTime)
