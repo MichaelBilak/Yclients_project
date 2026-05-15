@@ -115,13 +115,11 @@ async def dashboard_bundle(
     summary = await fetch_summary(db, start, end, company_id)
     daily = await fetch_revenue_daily(db, start, end, company_id)
     services = await fetch_top_services(db, start, end, company_id, 10)
-    plan_fact = await fetch_plan_fact(db, start, end, company_id)
     return {
         'success': True,
         'data': {
             'summary': summary,
             'revenue_daily': daily,
             'top_services': services,
-            'plan_fact': plan_fact,
         },
     }

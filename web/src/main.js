@@ -23,6 +23,9 @@ const els = {
   revenueChart: document.getElementById('revenue-chart'),
   appointmentsChart: document.getElementById('appointments-chart'),
   servicesChart: document.getElementById('services-chart'),
+  overviewView: document.getElementById('overview-view'),
+  planView: document.getElementById('plan-view'),
+  viewLinks: [...document.querySelectorAll('[data-view-link]')],
 };
 
 const charts = {
@@ -30,6 +33,8 @@ const charts = {
   appointments: null,
   services: null,
 };
+
+let activeView = 'overview';
 
 function headers() {
   const h = {};
@@ -346,16 +351,7 @@ function renderServicesTable(services) {
   `;
 }
 
-function renderPlanFact(planFact) {
-  const groups = planFact?.groups || [];
-  const metrics = planFact?.metrics || [];
-  if (!groups.length || !metrics.length) {
-    els.planFactTable.innerHTML = '<div class="empty">Нет плана за выбранный период</div>';
-    els.planMeta.textContent = '';
-    return;
-  }
-
-  const metricByCode = Object.fromEntries(metrics.map((metric) => [metric.code, metric]));
+function renderPlanTable(groups, metrics) {
   const rowTypes = [
     ['plan', 'План'],
     ['fact', 'Факт'],
@@ -363,12 +359,12 @@ function renderPlanFact(planFact) {
     ['completion_pct', '% выполнения'],
   ];
 
-  els.planFactTable.innerHTML = `
+  return `
     <div class="table-scroll">
       <table class="plan-table">
         <thead>
           <tr>
-            <th>БШ</th>
+            <th>Разрез</th>
             <th>Показатель</th>
             ${metrics.map((metric) => `<th class="number">${escapeHtml(metric.label)}</th>`).join('')}
           </tr>
@@ -385,11 +381,12 @@ function renderPlanFact(planFact) {
                         : ''
                     }
                     <td class="row-label">${escapeHtml(label)}</td>
-                    ${(group.metrics || [])
-                      .map((cell) => {
-                        const metric = metricByCode[cell.code] || {};
+                    ${metrics
+                      .map((metric) => {
+                        const cellsByCode = Object.fromEntries((group.metrics || []).map((cell) => [cell.code, cell]));
+                        const cell = cellsByCode[metric.code] || {};
                         const format = field === 'completion_pct' ? 'percent' : metric.format;
-                        const statusClass = field === 'completion_pct' ? ` metric-status ${cell.status}` : '';
+                        const statusClass = field === 'completion_pct' ? ` metric-status ${cell.status || 'no-plan'}` : '';
                         return `<td class="number${statusClass}">${escapeHtml(formatMetricValue(cell[field], format))}</td>`;
                       })
                       .join('')}
@@ -402,15 +399,62 @@ function renderPlanFact(planFact) {
       </table>
     </div>
   `;
+}
+
+function renderPlanSection(title, groups, metrics, meta = '') {
+  if (!groups.length || !metrics.length) return '';
+  return `
+    <section class="plan-section">
+      <div class="plan-section-title">
+        <h3>${escapeHtml(title)}</h3>
+        <span class="meta">${escapeHtml(meta)}</span>
+      </div>
+      ${renderPlanTable(groups, metrics)}
+    </section>
+  `;
+}
+
+function renderPlanFact(planFact) {
+  const groups = planFact?.groups || [];
+  const metrics = planFact?.metrics || [];
+  if (!groups.length && !planFact?.parent_group) {
+    els.planFactTable.innerHTML = '<div class="empty">Нет плана за выбранный период</div>';
+    els.planMeta.textContent = '';
+    return;
+  }
+
+  const metricSets = planFact?.metric_sets || {};
+  if (planFact?.view_scope === 'staff') {
+    const sections = [];
+    if (planFact.parent_group) {
+      sections.push(renderPlanSection('Итого по филиалу', [planFact.parent_group], metricSets.branch || metrics));
+    }
+
+    const categoryOrder = ['barber', 'administrator', 'unknown'];
+    categoryOrder.forEach((category) => {
+      const categoryGroups = groups.filter((group) => (group.category || 'unknown') === category);
+      if (!categoryGroups.length) return;
+      const categoryMetrics = metricSets[category] || metrics;
+      const label = categoryGroups[0].category_label || category;
+      sections.push(renderPlanSection(label, categoryGroups, categoryMetrics, `${categoryGroups.length} сотрудников`));
+    });
+
+    els.planFactTable.innerHTML = sections.join('') || '<div class="empty">Нет сотрудников для выбранного филиала</div>';
+  } else {
+    els.planFactTable.innerHTML = renderPlanTable(groups, metrics);
+  }
+
   const planPeriod = planFact?.plan_period;
   const planPeriodText = planPeriod ? ` · план ${planPeriod.start} .. ${planPeriod.end}` : '';
-  els.planMeta.textContent = `${groups.length} блоков${planPeriodText}`;
+  const scopeText = planFact?.view_scope === 'staff'
+    ? `${planFact.branch?.title || 'Филиал'} · сотрудники`
+    : 'сеть и филиалы';
+  els.planMeta.textContent = `${scopeText} · ${groups.length} строк${planPeriodText}`;
 }
 
 function renderBundle(bundle) {
-  const { summary, revenue_daily: daily = [], top_services: services = [], plan_fact: planFact } = bundle;
+  const { summary, revenue_daily: daily = [], top_services: services = [] } = bundle;
   renderKpi(summary);
-  renderPlanFact(planFact);
   renderRevenueChart(daily);
   renderAppointmentsChart(daily);
   renderServicesChart(services.slice(0, 8));
@@ -454,6 +498,45 @@ async function loadSyncStatus() {
   }
 }
 
+function viewFromHash() {
+  return window.location.hash === '#plan-fact' ? 'plan' : 'overview';
+}
+
+function setActiveView(view) {
+  activeView = view;
+  els.overviewView.classList.toggle('active', view === 'overview');
+  els.planView.classList.toggle('active', view === 'plan');
+  els.viewLinks.forEach((link) => {
+    link.classList.toggle('active', link.dataset.viewLink === view);
+  });
+  els.periodLabel.textContent = view === 'plan'
+    ? 'План/факт по филиалам и сотрудникам'
+    : 'Метрики по филиалам и услугам';
+}
+
+async function loadPlanFact() {
+  clearError();
+  els.load.disabled = true;
+  els.load.textContent = 'Загрузка';
+  setApiState('API: загрузка', 'warn');
+
+  try {
+    const payload = await fetchJson('/dashboard/widget/plan_fact', {
+      start_date: els.start.value,
+      end_date: els.end.value,
+      company_id: els.branch.value,
+    });
+    renderPlanFact(payload.data);
+    setApiState('API: подключен', 'ok');
+    await loadSyncStatus();
+  } catch (error) {
+    showError(error.message);
+  } finally {
+    els.load.disabled = false;
+    els.load.textContent = 'Обновить';
+  }
+}
+
 async function loadDashboard() {
   clearError();
   els.load.disabled = true;
@@ -477,13 +560,28 @@ async function loadDashboard() {
   }
 }
 
+async function loadCurrentView() {
+  if (activeView === 'plan') {
+    await loadPlanFact();
+  } else {
+    await loadDashboard();
+  }
+}
+
 async function init() {
   defaultDates();
   renderServicesTable([]);
   await loadBranches();
-  await loadDashboard();
+  setActiveView(viewFromHash());
+  await loadCurrentView();
 }
 
-els.load.addEventListener('click', () => loadDashboard());
-els.branch.addEventListener('change', () => loadDashboard());
+els.load.addEventListener('click', () => loadCurrentView());
+els.branch.addEventListener('change', () => loadCurrentView());
+window.addEventListener('hashchange', async () => {
+  const nextView = viewFromHash();
+  if (nextView === activeView) return;
+  setActiveView(nextView);
+  await loadCurrentView();
+});
 init();

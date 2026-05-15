@@ -5,12 +5,12 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     JSON,
     String,
     Text,
     Time,
-    UniqueConstraint,
 )
 from sqlalchemy.orm import declarative_base, relationship
 
@@ -363,27 +363,44 @@ class ZReportPayment(Base):
 
 
 class PlanMetric(Base):
-    """Manually maintained branch plan values for plan-vs-fact dashboards."""
+    """Manually maintained branch and staff plan values for plan-vs-fact dashboards."""
 
     __tablename__ = 'plan_metrics'
-    __table_args__ = (
-        UniqueConstraint(
-            'period_start',
-            'period_end',
-            'company_id',
-            'metric_code',
-            name='uq_plan_metric_period_company_metric',
-        ),
-    )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     period_start = Column(Date, nullable=False, index=True)
     period_end = Column(Date, nullable=False, index=True)
     company_id = Column(Integer, ForeignKey('companies.id'), nullable=False, index=True)
+    staff_id = Column(Integer, ForeignKey('staff.id'), nullable=True, index=True)
+    staff_category = Column(String, index=True)
     metric_code = Column(String, nullable=False, index=True)
     value = Column(Float, nullable=False)
     source = Column(String, default='manual')
     updated_at = Column(DateTime, nullable=False)
+
+    __table_args__ = (
+        Index(
+            'uq_plan_metric_period_company_metric_branch',
+            'period_start',
+            'period_end',
+            'company_id',
+            'metric_code',
+            unique=True,
+            sqlite_where=staff_id.is_(None),
+            postgresql_where=staff_id.is_(None),
+        ),
+        Index(
+            'uq_plan_metric_period_company_staff_metric',
+            'period_start',
+            'period_end',
+            'company_id',
+            'staff_id',
+            'metric_code',
+            unique=True,
+            sqlite_where=staff_id.is_not(None),
+            postgresql_where=staff_id.is_not(None),
+        ),
+    )
 
 
 class PortalAccount(Base):

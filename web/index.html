@@ -101,6 +101,39 @@
       background: #ffffff;
     }
 
+    .tabs {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 16px;
+    }
+
+    .tab {
+      display: inline-flex;
+      min-height: 36px;
+      align-items: center;
+      padding: 7px 12px;
+      border: 1px solid #cbd5e1;
+      border-radius: 6px;
+      background: #ffffff;
+      color: #334155;
+      font-weight: 700;
+      text-decoration: none;
+    }
+
+    .tab.active {
+      border-color: #0f766e;
+      background: #e6fffb;
+      color: #0f766e;
+    }
+
+    .view {
+      display: none;
+    }
+
+    .view.active {
+      display: block;
+    }
+
     label {
       display: flex;
       flex-direction: column;
@@ -301,6 +334,24 @@
       white-space: nowrap;
     }
 
+    .plan-section + .plan-section {
+      margin-top: 18px;
+    }
+
+    .plan-section-title {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      margin: 0 0 10px;
+    }
+
+    .plan-section-title h3 {
+      margin: 0;
+      font-size: 15px;
+      letter-spacing: 0;
+    }
+
     .metric-status.ok { background: #dcfce7; color: #166534; }
     .metric-status.warn { background: #ffedd5; color: #9a3412; }
     .metric-status.bad { background: #fee2e2; color: #991b1b; }
@@ -374,6 +425,11 @@
       </div>
     </section>
 
+    <nav class="tabs" aria-label="Разделы дашборда">
+      <a class="tab active" href="#overview" data-view-link="overview">Обзор</a>
+      <a class="tab" href="#plan-fact" data-view-link="plan">План / факт</a>
+    </nav>
+
     <section class="toolbar" aria-label="Фильтры дашборда">
       <label>
         С
@@ -394,47 +450,51 @@
 
     <div class="alert" id="error"></div>
 
-    <section class="kpi" id="kpi"></section>
+    <section class="view active" id="overview-view" data-view="overview">
+      <section class="kpi" id="kpi"></section>
 
-    <section class="grid">
+      <section class="grid">
+        <div class="panel wide">
+          <div class="panel-title">
+            <h2>Выручка по дням</h2>
+            <span class="meta" id="revenue-meta"></span>
+          </div>
+          <div class="chart-box"><canvas id="revenue-chart"></canvas></div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-title">
+            <h2>Записи по дням</h2>
+            <span class="meta" id="appointments-meta"></span>
+          </div>
+          <div class="chart-box short"><canvas id="appointments-chart"></canvas></div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-title">
+            <h2>Топ услуг</h2>
+            <span class="meta" id="services-meta"></span>
+          </div>
+          <div class="chart-box short"><canvas id="services-chart"></canvas></div>
+        </div>
+
+        <div class="panel wide">
+          <div class="panel-title">
+            <h2>Услуги с максимальной выручкой</h2>
+            <span class="meta" id="table-meta"></span>
+          </div>
+          <div id="services-table"></div>
+        </div>
+      </section>
+    </section>
+
+    <section class="view" id="plan-view" data-view="plan">
       <div class="panel wide">
         <div class="panel-title">
           <h2>План / факт</h2>
           <span class="meta" id="plan-meta"></span>
         </div>
         <div id="plan-fact-table"></div>
-      </div>
-
-      <div class="panel wide">
-        <div class="panel-title">
-          <h2>Выручка по дням</h2>
-          <span class="meta" id="revenue-meta"></span>
-        </div>
-        <div class="chart-box"><canvas id="revenue-chart"></canvas></div>
-      </div>
-
-      <div class="panel">
-        <div class="panel-title">
-          <h2>Записи по дням</h2>
-          <span class="meta" id="appointments-meta"></span>
-        </div>
-        <div class="chart-box short"><canvas id="appointments-chart"></canvas></div>
-      </div>
-
-      <div class="panel">
-        <div class="panel-title">
-          <h2>Топ услуг</h2>
-          <span class="meta" id="services-meta"></span>
-        </div>
-        <div class="chart-box short"><canvas id="services-chart"></canvas></div>
-      </div>
-
-      <div class="panel wide">
-        <div class="panel-title">
-          <h2>Услуги с максимальной выручкой</h2>
-          <span class="meta" id="table-meta"></span>
-        </div>
-        <div id="services-table"></div>
       </div>
     </section>
   </main>
