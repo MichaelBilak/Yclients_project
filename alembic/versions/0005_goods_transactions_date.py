@@ -11,17 +11,27 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        'goods_transactions',
-        sa.Column('date', sa.DateTime(), nullable=True),
-        schema='public',
-    )
-    op.create_index(
-        'ix_goods_transactions_date',
-        'goods_transactions',
-        ['date'],
-        schema='public',
-    )
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    if not inspector.has_table('goods_transactions', schema='public'):
+        return
+
+    columns = {column['name'] for column in inspector.get_columns('goods_transactions', schema='public')}
+    if 'date' not in columns:
+        op.add_column(
+            'goods_transactions',
+            sa.Column('date', sa.DateTime(), nullable=True),
+            schema='public',
+        )
+
+    indexes = {index['name'] for index in inspector.get_indexes('goods_transactions', schema='public')}
+    if 'ix_goods_transactions_date' not in indexes:
+        op.create_index(
+            'ix_goods_transactions_date',
+            'goods_transactions',
+            ['date'],
+            schema='public',
+        )
 
     op.execute(sa.text("""
         UPDATE public.goods_transactions gt

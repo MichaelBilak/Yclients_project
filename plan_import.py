@@ -34,11 +34,12 @@ METRIC_COLUMN_ALIASES = {
     'head_care_qty': ('уход голова, шт', 'уход голова', 'head_care_qty'),
     'cosmo_qty': ('космо, шт', 'космо шт', 'cosmo_qty'),
     'cosmo_sum': ('космо сумм.', 'космо сумма', 'космо сумм', 'cosmo_sum'),
-    'reviews_qty': ('отзывы, шт', 'отзывы', 'reviews_qty'),
     'opz_qty': ('опз, шт', 'опз шт', 'opz_qty'),
     'opz_pct': ('опз,%', 'опз %', 'опз процент', 'opz_pct'),
     'extra_services_pct': ('% доп.услуг', 'доп.услуг,%', 'доп услуги %', 'extra_services_pct'),
 }
+
+RETIRED_PLAN_METRIC_CODES = {'reviews_qty'}
 
 PERIOD_START_ALIASES = ('period_start', 'date_from', 'start_date', 'начало периода', 'с')
 PERIOD_END_ALIASES = ('period_end', 'date_to', 'end_date', 'конец периода', 'по')
@@ -191,7 +192,7 @@ async def _save_plan_values(
     await db.execute(
         delete(PlanMetric).where(
             *_branch_or_staff_filter(period_start, period_end, company_id, staff_id),
-            PlanMetric.metric_code.in_(list(metric_codes)),
+            PlanMetric.metric_code.in_(list(set(metric_codes) | RETIRED_PLAN_METRIC_CODES)),
         )
     )
 

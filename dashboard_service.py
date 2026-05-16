@@ -12,7 +12,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import (
     Appointment,
-    Comment,
     Company,
     GoodTransaction,
     PlanMetric,
@@ -145,10 +144,6 @@ def _service_qty_sum(title_expr, parts: tuple[str, ...]):
         ),
         0,
     )
-
-
-def _date_time_bounds(start: date, end: date) -> tuple[datetime, datetime]:
-    return datetime.combine(start, time.min), datetime.combine(end, time.max)
 
 
 def _derive_metric_values(
@@ -438,28 +433,6 @@ async def _goods_sales_metrics(
     }
 
 
-async def _reviews_count(
-    db: AsyncSession,
-    start: date,
-    end: date,
-    company_id: int,
-    staff_id: Optional[int] = None,
-) -> float:
-    start_dt, end_dt = _date_time_bounds(start, end)
-    filters = [
-        Comment.company_id == company_id,
-        Comment.date >= start_dt,
-        Comment.date <= end_dt,
-    ]
-    if staff_id is not None:
-        filters.append(Comment.master_id == staff_id)
-    stmt = (
-        select(func.count(Comment.id))
-        .where(*filters)
-    )
-    return float((await db.scalar(stmt)) or 0)
-
-
 async def _opz_count(
     db: AsyncSession,
     start: date,
@@ -540,7 +513,6 @@ async def _fact_metric_components(
     values: dict[str, float] = {
         'revenue': float(revenue['revenue'] or 0),
         'clients': float(revenue['unique_clients'] or 0),
-        'reviews_qty': await _reviews_count(db, start, end, company_id, staff_id),
         'opz_qty': await _opz_count(
             db, start, end, company_id,
             staff_id=opz_staff_id,

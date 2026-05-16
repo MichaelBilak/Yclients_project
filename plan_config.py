@@ -15,7 +15,6 @@ PLAN_FACT_METRICS: tuple[dict[str, str], ...] = (
     {'code': 'head_care_qty', 'label': 'Уход голова, шт', 'format': 'number'},
     {'code': 'cosmo_qty', 'label': 'Космо, шт', 'format': 'number'},
     {'code': 'cosmo_sum', 'label': 'Космо сумм.', 'format': 'money'},
-    {'code': 'reviews_qty', 'label': 'Отзывы, шт', 'format': 'number'},
     {'code': 'opz_qty', 'label': 'ОПЗ, шт', 'format': 'number'},
     {'code': 'opz_pct', 'label': 'ОПЗ,%', 'format': 'percent'},
     {'code': 'extra_services_pct', 'label': '% доп.услуг', 'format': 'percent'},
@@ -30,7 +29,6 @@ RAW_PLAN_FACT_CODES = {
     'head_care_qty',
     'cosmo_qty',
     'cosmo_sum',
-    'reviews_qty',
     'opz_qty',
 }
 
@@ -41,7 +39,6 @@ ADMIN_METRIC_CODES = (
     'clients',
     'cosmo_qty',
     'cosmo_sum',
-    'reviews_qty',
     'opz_qty',
     'opz_pct',
 )

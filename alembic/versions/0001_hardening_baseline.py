@@ -64,6 +64,13 @@ LEGACY_VIEWS = [
     'v_goods_transactions_enriched',
 ]
 
+SYSTEM_BASE_TABLES = {
+    'sync_state',
+    'sync_runs',
+    'sync_step_runs',
+    'sync_jobs',
+}
+
 
 def _rebuild_public_schema(bind) -> None:
     for view_name in LEGACY_VIEWS:
@@ -86,7 +93,7 @@ def _ensure_system_schema(bind) -> None:
         bind=bind,
         tables=[
             table for table in Base.metadata.sorted_tables
-            if table.schema == 'system'
+            if table.schema == 'system' and table.name in SYSTEM_BASE_TABLES
         ],
         checkfirst=True,
     )

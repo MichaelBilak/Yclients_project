@@ -9,7 +9,7 @@ from sqlalchemy import select
 import api
 from plan_import import import_plan_sheet_csv
 from api import app
-from models import Appointment, Client, Comment, Company, GoodTransaction, Group, PlanMetric, Staff, Transaction
+from models import Appointment, Client, Company, GoodTransaction, Group, PlanMetric, Staff, Transaction
 
 
 @pytest.mark.asyncio
@@ -195,15 +195,6 @@ async def test_dashboard_plan_fact_uses_plan_and_fact_formulas(async_session):
             company_id=1,
             date=datetime(2025, 1, 11, 12, 0, 0),
         ),
-        Comment(
-            id=1,
-            type='review',
-            master_id=1,
-            text='ok',
-            date=datetime(2025, 1, 12, 12, 0, 0),
-            rating=5.0,
-            company_id=1,
-        ),
     ])
 
     now = datetime(2025, 1, 1, 0, 0, 0)
@@ -214,7 +205,6 @@ async def test_dashboard_plan_fact_uses_plan_and_fact_formulas(async_session):
         'camouflage_qty': 2.0,
         'cosmo_qty': 4.0,
         'cosmo_sum': 2000.0,
-        'reviews_qty': 2.0,
         'opz_qty': 2.0,
     }.items():
         async_session.add(
@@ -278,7 +268,7 @@ async def test_dashboard_plan_fact_uses_plan_and_fact_formulas(async_session):
     assert cells['camouflage_qty']['fact'] == 2.0
     assert cells['cosmo_qty']['fact'] == 3.0
     assert cells['cosmo_sum']['fact'] == 1500.0
-    assert cells['reviews_qty']['fact'] == 1.0
+    assert 'reviews_qty' not in cells
     assert cells['opz_qty']['fact'] == 1.0
     assert cells['opz_pct']['fact'] == 100.0
     assert cells['extra_services_pct']['fact'] == 300.0
@@ -431,12 +421,12 @@ async def test_plan_sheet_csv_imports_flat_staff_rows_and_derives_branch_plan(as
 
     result = await import_plan_sheet_csv(
         async_session,
-        'month,company_id,branch,stuff_id,stuff_name,position,Выручка,СЧ общий,Кол-во клиентов,"Воск, шт","Камуфляж, шт","Уход лицо, шт","Уход голова, шт","Космо, шт",Космо сумм.,"Отзывы, шт","ОПЗ, шт"\n'
-        '2025-01,1,Salon,10,Alice,Барбер,7000,,7,,2,,,,1000,1,1\n'
-        '2025-01,1,Salon,20,Admin,Администратор,3000,,3,,,,,4,500,2,2\n',
+        'month,company_id,branch,stuff_id,stuff_name,position,Выручка,СЧ общий,Кол-во клиентов,"Воск, шт","Камуфляж, шт","Уход лицо, шт","Уход голова, шт","Космо, шт",Космо сумм.,"ОПЗ, шт"\n'
+        '2025-01,1,Salon,10,Alice,Барбер,7000,,7,,2,,,,1000,1\n'
+        '2025-01,1,Salon,20,Admin,Администратор,3000,,3,,,,,4,500,2\n',
     )
 
-    assert result['imported'] == 19
+    assert result['imported'] == 16
     assert result['warnings'] == []
 
     rows = (
