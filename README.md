@@ -37,6 +37,8 @@
 
 ```env
 PLAN_SHEET_CSV_URL=https://docs.google.com/spreadsheets/d/.../export?format=csv&gid=...
+# Опционально. Если пусто, импорт попробует открыть лист `services` из той же таблицы.
+SERVICES_SHEET_CSV_URL=https://docs.google.com/spreadsheets/d/.../gviz/tq?tqx=out:csv&sheet=services
 ```
 
 После изменения Google Sheet запустите импорт:
@@ -45,6 +47,8 @@ PLAN_SHEET_CSV_URL=https://docs.google.com/spreadsheets/d/.../export?format=csv&
 curl -X POST http://127.0.0.1:8000/dashboard/plan/sync \
   -H "X-Sync-Token: your_token"
 ```
+
+Этот же импорт обновляет метки услуг из листа `services`. Для расчета среднего чека по доп. услугам лист должен содержать `service_id` или пару `company_id` + `service_title`, а также колонку-метку вроде `доп услуга`, `метка доп услуг`, `is_extra` или `tag`. Значения `да`, `доп`, `extra`, `1` считаются доп. услугой; `нет`, `0`, `обычная` снимают метку.
 
 Ожидаемый формат листа — плоская таблица, где одна строка = план одного сотрудника за период. Период задается через `month` в формате `YYYY-MM` или через `period_start` / `period_end`. Филиал лучше задавать через `company_id`; также поддерживается точное имя филиала в колонке `branch`. Сотрудника можно указать через `staff_id` / `stuff_id` или точное имя в `staff_name` / `stuff_name`. Категория берется из `position` (`Барбер`, `ТОП-барбер`, `Администратор`) или из текущей `Staff.position` в базе.
 

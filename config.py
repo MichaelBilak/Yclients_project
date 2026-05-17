@@ -86,6 +86,9 @@ DASHBOARD_CORS_ORIGIN_REGEX = os.getenv('DASHBOARD_CORS_ORIGIN_REGEX', '')
 
 # Published Google Sheets CSV URL with branch plan values for /dashboard/widget/plan_fact.
 PLAN_SHEET_CSV_URL = os.getenv('PLAN_SHEET_CSV_URL', '')
+# Optional published CSV URL for the services labels sheet. If empty, the importer
+# tries to read sheet=services from the same spreadsheet as PLAN_SHEET_CSV_URL.
+SERVICES_SHEET_CSV_URL = os.getenv('SERVICES_SHEET_CSV_URL', '')
 
 # ============================================================================
 # Уведомления

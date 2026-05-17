@@ -6,6 +6,7 @@ import csv
 import io
 import asyncio
 import re
+import urllib.parse
 import urllib.request
 from calendar import monthrange
 from dataclasses import dataclass
@@ -15,8 +16,8 @@ from typing import Any
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from config import PLAN_SHEET_CSV_URL
-from models import Company, PlanMetric, Staff
+from config import PLAN_SHEET_CSV_URL, SERVICES_SHEET_CSV_URL
+from models import Company, PlanMetric, Service, ServiceLabel, Staff
 from plan_config import (
     RAW_PLAN_FACT_CODES,
     STAFF_CATEGORY_METRIC_CODES,
@@ -51,6 +52,37 @@ STAFF_NAME_ALIASES = ('staff', 'staff_name', 'stuff_name', 'employee', 'employee
 STAFF_CATEGORY_ALIASES = ('staff_category', 'category', 'position', 'role', 'должность', 'роль', 'категория', 'тип сотрудника')
 NETWORK_NAMES = {'сеть', 'итого', 'total', 'network'}
 VALIDATION_TOLERANCE = 0.01
+
+SERVICE_ID_ALIASES = ('service_id', 'yclients_service_id', 'id услуги', 'id', 'service id')
+SERVICE_TITLE_ALIASES = ('service', 'service_title', 'title', 'услуга', 'название услуги')
+SERVICE_EXTRA_ALIASES = (
+    'is_extra',
+    'extra_service',
+    'additional_service',
+    'доп услуга',
+    'доп. услуга',
+    'доп услуги',
+    'доп. услуги',
+    'метка доп услуг',
+)
+SERVICE_TAG_ALIASES = ('tag', 'label', 'метка', 'тег')
+TRUE_MARKERS = {'1', 'true', 'yes', 'y', 'да', 'истина', 'доп', 'доп услуга', 'доп услуги', 'extra', 'additional', 'x', '+'}
+FALSE_MARKERS = {
+    '0',
+    'false',
+    'no',
+    'n',
+    'нет',
+    'ложь',
+    'обычная',
+    'основная',
+    'не доп',
+    'не доп услуга',
+    'не доп услуги',
+    'standard',
+    'base',
+    '-',
+}
 
 
 @dataclass(frozen=True)
@@ -128,6 +160,19 @@ def _parse_number(value: str) -> float | None:
         return float(normalized)
     except ValueError:
         return None
+
+
+def _parse_marker(value: str) -> bool | None:
+    text = _normalize(value)
+    if not text:
+        return None
+    if text in TRUE_MARKERS:
+        return True
+    if text in FALSE_MARKERS:
+        return False
+    if 'доп' in text or 'extra' in text or 'additional' in text:
+        return True
+    return None
 
 
 def _branch_or_staff_filter(period_start: date, period_end: date, company_id: int, staff_id: int | None):
@@ -316,6 +361,15 @@ def _csv_text_from_url(url: str) -> str:
         return response.read().decode('utf-8-sig')
 
 
+def _sheet_csv_url_from_spreadsheet_url(url: str, sheet_name: str) -> str:
+    match = re.search(r'/spreadsheets/d/([^/]+)', url or '')
+    if not match:
+        return ''
+    spreadsheet_id = match.group(1)
+    query = urllib.parse.urlencode({'tqx': 'out:csv', 'sheet': sheet_name})
+    return f'https://docs.google.com/spreadsheets/d/{spreadsheet_id}/gviz/tq?{query}'
+
+
 async def import_plan_sheet_csv(db: AsyncSession, csv_text: str, source: str = 'google_sheet') -> dict[str, Any]:
     company_rows = (await db.execute(select(Company.id, Company.title))).all()
     companies_by_title = {_normalize(row.title): int(row.id) for row in company_rows}
@@ -452,8 +506,114 @@ async def import_plan_sheet_csv(db: AsyncSession, csv_text: str, source: str = '
     return {'imported': imported, 'skipped': skipped, 'warnings': warnings}
 
 
+async def import_services_sheet_csv(
+    db: AsyncSession,
+    csv_text: str,
+    source: str = 'google_sheet:services',
+) -> dict[str, Any]:
+    service_rows = (await db.execute(select(Service.id, Service.title, Service.company_id))).all()
+    services_by_id = {int(row.id): row for row in service_rows}
+    services_by_company_title = {
+        (int(row.company_id), _normalize(row.title)): row
+        for row in service_rows
+    }
+    services_by_title: dict[str, list[Any]] = {}
+    for row in service_rows:
+        services_by_title.setdefault(_normalize(row.title), []).append(row)
+
+    company_rows = (await db.execute(select(Company.id, Company.title))).all()
+    companies_by_title = {_normalize(row.title): int(row.id) for row in company_rows}
+
+    reader = csv.DictReader(io.StringIO(csv_text))
+    now = datetime.utcnow()
+    skipped: list[str] = []
+    warnings: list[str] = []
+    labels_by_service_id: dict[int, ServiceLabel] = {}
+    processed_markers = 0
+
+    for index, row in enumerate(reader, start=2):
+        service_id_value = _find_value(row, SERVICE_ID_ALIASES).strip()
+        service_id = int(service_id_value) if service_id_value.isdigit() else None
+        service_row = services_by_id.get(service_id) if service_id is not None else None
+        matched_services = [service_row] if service_row is not None else []
+        title_value = _find_value(row, SERVICE_TITLE_ALIASES)
+
+        if service_row is None:
+            company_id_value = _find_value(row, COMPANY_ID_ALIASES).strip()
+            company_id = int(company_id_value) if company_id_value.isdigit() else None
+            if company_id is None:
+                branch_value = _find_value(row, BRANCH_ALIASES)
+                company_id = companies_by_title.get(_normalize(branch_value))
+            if company_id is not None and title_value:
+                service_row = services_by_company_title.get((company_id, _normalize(title_value)))
+                matched_services = [service_row] if service_row is not None else []
+            elif title_value:
+                matched_services = services_by_title.get(_normalize(title_value), [])
+
+        if not matched_services:
+            skipped.append(f'row {index}: unknown service {service_id_value or _find_value(row, SERVICE_TITLE_ALIASES)}')
+            continue
+
+        marker_value = _find_value(row, SERVICE_EXTRA_ALIASES) or _find_value(row, SERVICE_TAG_ALIASES)
+        is_extra = _parse_marker(marker_value)
+        if is_extra is None:
+            skipped.append(f'row {index}: no extra-service marker')
+            continue
+
+        processed_markers += 1
+        if is_extra:
+            for matched_service in matched_services:
+                service_id = int(matched_service.id)
+                labels_by_service_id[service_id] = ServiceLabel(
+                    service_id=service_id,
+                    company_id=int(matched_service.company_id),
+                    is_extra=True,
+                    source=source,
+                    updated_at=now,
+                )
+
+    if processed_markers == 0:
+        warnings.append('services sheet has no rows with extra-service marker; labels unchanged')
+        return {'imported': 0, 'processed': 0, 'skipped': skipped, 'warnings': warnings}
+
+    await db.execute(delete(ServiceLabel))
+    imported = 0
+    for label in labels_by_service_id.values():
+        db.add(label)
+        imported += 1
+    await db.commit()
+    return {
+        'imported': imported,
+        'processed': processed_markers,
+        'skipped': skipped,
+        'warnings': warnings,
+    }
+
+
+async def import_services_sheet_from_config(db: AsyncSession) -> dict[str, Any]:
+    services_url = SERVICES_SHEET_CSV_URL or _sheet_csv_url_from_spreadsheet_url(
+        PLAN_SHEET_CSV_URL,
+        'services',
+    )
+    if not services_url:
+        return {'imported': 0, 'processed': 0, 'skipped': ['services sheet CSV URL is not configured'], 'warnings': []}
+
+    try:
+        csv_text = await asyncio.to_thread(_csv_text_from_url, services_url)
+    except Exception as exc:
+        return {
+            'imported': 0,
+            'processed': 0,
+            'skipped': [f'services sheet is unavailable: {exc}'],
+            'warnings': [],
+        }
+    return await import_services_sheet_csv(db, csv_text, source='google_sheet:services')
+
+
 async def import_plan_sheet_from_config(db: AsyncSession) -> dict[str, Any]:
     if not PLAN_SHEET_CSV_URL:
         return {'imported': 0, 'skipped': ['PLAN_SHEET_CSV_URL is not configured']}
     csv_text = await asyncio.to_thread(_csv_text_from_url, PLAN_SHEET_CSV_URL)
-    return await import_plan_sheet_csv(db, csv_text, source='google_sheet')
+    result = await import_plan_sheet_csv(db, csv_text, source='google_sheet')
+    result['services'] = await import_services_sheet_from_config(db)
+    return result

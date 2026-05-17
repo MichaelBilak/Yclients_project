@@ -7,9 +7,20 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 import api
-from plan_import import import_plan_sheet_csv
+from plan_import import import_plan_sheet_csv, import_services_sheet_csv
 from api import app
-from models import Appointment, Client, Company, GoodTransaction, Group, PlanMetric, Staff, Transaction
+from models import (
+    Appointment,
+    Client,
+    Company,
+    GoodTransaction,
+    Group,
+    PlanMetric,
+    Service,
+    ServiceLabel,
+    Staff,
+    Transaction,
+)
 
 
 @pytest.mark.asyncio
@@ -99,6 +110,92 @@ async def test_dashboard_summary_revenue_and_change(async_session):
     assert data['revenue']['total'] == 1000.0
     assert data['revenue']['change_pct'] == 100.0
     assert data['appointments_breakdown']['attended'] == 1
+
+
+@pytest.mark.asyncio
+async def test_dashboard_summary_split_revenue_and_average_checks(async_session):
+    async_session.add(Group(id=1, title='G1'))
+    async_session.add(Company(id=1, title='Salon', group_id=1))
+    async_session.add(Staff(id=1, name='Master', position='Барбер', company_id=1))
+    async_session.add_all([
+        Client(id=1, name='Client 1', company_id=1, visits_count=1, last_visit_date=date(2025, 1, 10)),
+        Client(id=2, name='Client 2', company_id=1, visits_count=1, last_visit_date=date(2025, 1, 11)),
+        Service(id=10, title='Стрижка', company_id=1),
+        Service(id=11, title='Воск', company_id=1),
+    ])
+    await async_session.flush()
+    async_session.add_all([
+        Appointment(
+            id=1,
+            company_id=1,
+            staff_id=1,
+            client_id=1,
+            date=date(2025, 1, 10),
+            datetime=datetime(2025, 1, 10, 12, 0, 0),
+            create_date=datetime(2025, 1, 9, 12, 0, 0),
+            seance_length=3600,
+            attendance=1,
+        ),
+        Appointment(
+            id=2,
+            company_id=1,
+            staff_id=1,
+            client_id=2,
+            date=date(2025, 1, 11),
+            datetime=datetime(2025, 1, 11, 12, 0, 0),
+            create_date=datetime(2025, 1, 10, 12, 0, 0),
+            seance_length=3600,
+            attendance=1,
+        ),
+    ])
+    await async_session.flush()
+    async_session.add_all([
+        Transaction(id=1, appointment_id=1, service_id=10, service_title='Стрижка', cost=1000.0, first_cost=1000.0, amount=1, company_id=1),
+        Transaction(id=2, appointment_id=1, service_id=11, service_title='Воск', cost=500.0, first_cost=500.0, amount=1, company_id=1),
+        Transaction(id=3, appointment_id=2, service_id=10, service_title='Стрижка', cost=1500.0, first_cost=1500.0, amount=1, company_id=1),
+        GoodTransaction(
+            id=1,
+            document_id=1,
+            type_id=1,
+            amount=1.0,
+            cost=600.0,
+            master_id=1,
+            company_id=1,
+            date=datetime(2025, 1, 11, 12, 0, 0),
+        ),
+        ServiceLabel(
+            service_id=11,
+            company_id=1,
+            is_extra=True,
+            source='google_sheet:services',
+            updated_at=datetime(2025, 1, 1, 0, 0, 0),
+        ),
+    ])
+    await async_session.commit()
+
+    async def override_db():
+        yield async_session
+
+    app.dependency_overrides[api.get_async_db] = override_db
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url='http://test') as client:
+        r = await client.get(
+            '/dashboard/widget/summary',
+            params={'start_date': '2025-01-01', 'end_date': '2025-01-31'},
+        )
+    app.dependency_overrides.clear()
+
+    assert r.status_code == 200
+    data = r.json()['data']
+    assert data['revenue']['total'] == 3600.0
+    assert data['revenue']['service_revenue'] == 3000.0
+    assert data['revenue']['goods_revenue'] == 600.0
+    assert data['revenue']['extra_service_revenue'] == 500.0
+    assert data['revenue']['appointments'] == 2
+    assert data['revenue']['extra_service_appointments'] == 1
+    assert data['average_check']['total'] == 1800.0
+    assert data['average_check']['services'] == 1500.0
+    assert data['average_check']['extra_services'] == 250.0
 
 
 @pytest.mark.asyncio
@@ -366,6 +463,33 @@ async def test_plan_sheet_csv_imports_wide_branch_rows(async_session):
     ).scalars().all()
     values = {row.metric_code: row.value for row in rows}
     assert values == {'revenue': 10000.0, 'clients': 5.0, 'wax_qty': 2.0}
+
+
+@pytest.mark.asyncio
+async def test_services_sheet_csv_imports_extra_service_labels(async_session):
+    async_session.add(Group(id=1, title='G1'))
+    async_session.add(Group(id=2, title='G2'))
+    async_session.add(Company(id=1, title='Salon', group_id=1))
+    async_session.add(Company(id=2, title='Salon 2', group_id=2))
+    async_session.add(Service(id=10, title='Стрижка', company_id=1))
+    async_session.add(Service(id=11, title='Воск', company_id=1))
+    async_session.add(Service(id=12, title='Воск', company_id=2))
+    await async_session.commit()
+
+    result = await import_services_sheet_csv(
+        async_session,
+        'company_id,service_id,service_title,доп услуга\n'
+        '1,10,Стрижка,нет\n'
+        ',,Воск,да\n',
+    )
+
+    assert result['imported'] == 2
+    assert result['processed'] == 2
+    rows = (await async_session.execute(select(ServiceLabel))).scalars().all()
+    assert sorted((row.service_id, row.company_id, row.is_extra) for row in rows) == [
+        (11, 1, True),
+        (12, 2, True),
+    ]
 
 
 @pytest.mark.asyncio

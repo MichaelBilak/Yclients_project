@@ -176,13 +176,44 @@ function formatInputDate(date) {
 
 function renderKpi(summary) {
   const revenue = summary.revenue || {};
+  const averageCheck = summary.average_check || {};
   const appointments = summary.appointments_breakdown || {};
   const cards = [
     {
-      label: 'Выручка',
+      label: 'Общая выручка',
       value: formatMoney(revenue.total),
       delta: formatPct(revenue.change_pct),
       deltaValue: revenue.change_pct,
+    },
+    {
+      label: 'Выручка по услугам',
+      value: formatMoney(revenue.service_revenue),
+      delta: formatPct(revenue.service_revenue_change_pct),
+      deltaValue: revenue.service_revenue_change_pct,
+    },
+    {
+      label: 'Выручка по товарам',
+      value: formatMoney(revenue.goods_revenue),
+      delta: formatPct(revenue.goods_revenue_change_pct),
+      deltaValue: revenue.goods_revenue_change_pct,
+    },
+    {
+      label: 'Средний чек общий',
+      value: formatMoney(averageCheck.total),
+      delta: formatPct(averageCheck.total_change_pct),
+      deltaValue: averageCheck.total_change_pct,
+    },
+    {
+      label: 'Средний чек по услугам',
+      value: formatMoney(averageCheck.services),
+      delta: formatPct(averageCheck.services_change_pct),
+      deltaValue: averageCheck.services_change_pct,
+    },
+    {
+      label: 'Средний чек по доп. услугам',
+      value: formatMoney(averageCheck.extra_services),
+      delta: formatPct(averageCheck.extra_services_change_pct),
+      deltaValue: averageCheck.extra_services_change_pct,
     },
     {
       label: 'Посещенные записи',
