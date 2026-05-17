@@ -42,6 +42,19 @@ if [ -f .env ]; then
   set +a
 fi
 
-curl -fsS "http://127.0.0.1:${API_PORT:-8000}/health"
-echo
-echo "Deploy completed: $remote_rev"
+health_url="http://127.0.0.1:${API_PORT:-8000}/health"
+health_retries="${HEALTH_RETRIES:-30}"
+health_interval_seconds="${HEALTH_INTERVAL_SECONDS:-2}"
+
+for attempt in $(seq 1 "$health_retries"); do
+  if curl -fsS "$health_url" >/dev/null; then
+    echo "API health check passed"
+    echo "Deploy completed: $remote_rev"
+    exit 0
+  fi
+  echo "Waiting for API health ($attempt/$health_retries): $health_url"
+  sleep "$health_interval_seconds"
+done
+
+echo "API did not become healthy after $health_retries attempts: $health_url" >&2
+exit 1
