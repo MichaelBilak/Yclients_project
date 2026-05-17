@@ -475,9 +475,11 @@ async def _goods_sales_metrics(
     company_id: int,
     staff_id: Optional[int] = None,
 ) -> dict[str, float]:
+    # YClients stores goods sales as negative stock movements.
+    sold_qty = func.sum(-func.coalesce(GoodTransaction.amount, 0.0))
     stmt = (
         select(
-            func.coalesce(func.sum(GoodTransaction.amount), 0.0).label('qty'),
+            func.coalesce(sold_qty, 0.0).label('qty'),
             func.coalesce(func.sum(GoodTransaction.cost), 0.0).label('revenue'),
         )
         .where(_goods_revenue_filters(start, end, company_id, staff_id))
@@ -497,31 +499,15 @@ async def _opz_count(
     staff_id: Optional[int] = None,
     created_user_id: Optional[int] = None,
 ) -> float:
-    visit_filters = [
-        Appointment.company_id == company_id,
-        Appointment.attendance > 0,
-        Appointment.client_id.is_not(None),
-        Appointment.date >= start,
-        Appointment.date <= end,
-    ]
-    if staff_id is not None:
-        visit_filters.append(Appointment.staff_id == staff_id)
-    visits_stmt = (
-        select(Appointment.id, Appointment.company_id, Appointment.client_id, Appointment.date)
-        .where(*visit_filters)
-    )
-    visits = (await db.execute(visits_stmt)).all()
-    if not visits:
-        return 0.0
-
     create_start = datetime.combine(start, time.min)
-    create_end = datetime.combine(end + timedelta(days=1), time.max)
+    create_end = datetime.combine(end + timedelta(days=1), time.min)
     candidate_filters = [
         Appointment.company_id == company_id,
         Appointment.client_id.is_not(None),
+        Appointment.date.is_not(None),
+        Appointment.create_date.is_not(None),
         Appointment.create_date >= create_start,
-        Appointment.create_date <= create_end,
-        Appointment.date > start,
+        Appointment.create_date < create_end,
     ]
     if created_user_id is not None:
         candidate_filters.append(Appointment.created_user_id == created_user_id)
@@ -536,22 +522,50 @@ async def _opz_count(
         .where(*candidate_filters)
     )
     candidates = (await db.execute(candidates_stmt)).all()
-    candidates_by_client: dict[tuple[int, int], list[Any]] = {}
-    for candidate in candidates:
-        candidates_by_client.setdefault((candidate.company_id, candidate.client_id), []).append(candidate)
+    if not candidates:
+        return 0.0
+
+    client_ids = sorted({candidate.client_id for candidate in candidates if candidate.client_id is not None})
+    visit_filters = [
+        Appointment.company_id == company_id,
+        Appointment.attendance > 0,
+        Appointment.client_id.in_(client_ids),
+        Appointment.date.is_not(None),
+        Appointment.date <= end,
+    ]
+    visits_stmt = (
+        select(
+            Appointment.company_id,
+            Appointment.client_id,
+            Appointment.staff_id,
+            Appointment.date,
+        )
+        .where(*visit_filters)
+    )
+    visits = (await db.execute(visits_stmt)).all()
+    visits_by_client: dict[tuple[int, int], list[Any]] = {}
+    for visit in visits:
+        visits_by_client.setdefault((visit.company_id, visit.client_id), []).append(visit)
 
     booked_clients: set[tuple[int, int]] = set()
-    for visit in visits:
-        visit_date = visit.date
-        expected_create_dates = {visit_date, visit_date + timedelta(days=1)}
-        for candidate in candidates_by_client.get((visit.company_id, visit.client_id), []):
-            if candidate.id == visit.id or candidate.create_date is None:
+    for candidate in candidates:
+        create_day = candidate.create_date.date()
+        last_visit_date: date | None = None
+        last_visit_matches_staff = staff_id is None
+        for visit in visits_by_client.get((candidate.company_id, candidate.client_id), []):
+            if visit.date > create_day:
                 continue
-            if candidate.date <= visit_date:
-                continue
-            if candidate.create_date.date() in expected_create_dates:
-                booked_clients.add((visit.company_id, visit.client_id))
-                break
+            if last_visit_date is None or visit.date > last_visit_date:
+                last_visit_date = visit.date
+                last_visit_matches_staff = staff_id is None or visit.staff_id == staff_id
+            elif staff_id is not None and visit.date == last_visit_date and visit.staff_id == staff_id:
+                last_visit_matches_staff = True
+        if last_visit_date is None or not last_visit_matches_staff:
+            continue
+        if candidate.date <= last_visit_date:
+            continue
+        if create_day in {last_visit_date, last_visit_date + timedelta(days=1)}:
+            booked_clients.add((candidate.company_id, candidate.client_id))
 
     return float(len(booked_clients))
 

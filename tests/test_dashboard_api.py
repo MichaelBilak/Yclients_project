@@ -286,7 +286,7 @@ async def test_dashboard_plan_fact_uses_plan_and_fact_formulas(async_session):
             id=1,
             document_id=1,
             type_id=1,
-            amount=3.0,
+            amount=-3.0,
             cost=1500.0,
             master_id=1,
             company_id=1,
@@ -437,6 +437,115 @@ async def test_admin_opz_attributes_to_creator(async_session):
     barber_cells = {cell['code']: cell for cell in barber_group['metrics']}
     assert admin_cells['opz_qty']['fact'] == 1.0
     assert barber_cells['opz_qty']['fact'] == 1.0
+
+
+@pytest.mark.asyncio
+async def test_opz_period_uses_future_appointment_create_date(async_session):
+    async_session.add(Group(id=1, title='G1'))
+    async_session.add(Company(id=1, title='Salon', group_id=1))
+    async_session.add(Staff(id=1, name='Barber', position='Барбер', company_id=1))
+    async_session.add_all([
+        Client(id=1, name='Dec Visit', company_id=1, visits_count=1, last_visit_date=date(2024, 12, 31)),
+        Client(id=2, name='Jan Visit', company_id=1, visits_count=1, last_visit_date=date(2025, 1, 31)),
+        Client(id=3, name='Late Booking', company_id=1, visits_count=1, last_visit_date=date(2025, 1, 1)),
+    ])
+    await async_session.flush()
+
+    async_session.add_all([
+        Appointment(
+            id=1,
+            company_id=1,
+            staff_id=1,
+            client_id=1,
+            date=date(2024, 12, 31),
+            datetime=datetime(2024, 12, 31, 12, 0, 0),
+            create_date=datetime(2024, 12, 1, 12, 0, 0),
+            seance_length=3600,
+            attendance=1,
+        ),
+        Appointment(
+            id=2,
+            company_id=1,
+            staff_id=1,
+            client_id=1,
+            date=date(2025, 1, 20),
+            datetime=datetime(2025, 1, 20, 12, 0, 0),
+            create_date=datetime(2025, 1, 1, 10, 0, 0),
+            seance_length=3600,
+            attendance=0,
+        ),
+        Appointment(
+            id=3,
+            company_id=1,
+            staff_id=1,
+            client_id=2,
+            date=date(2025, 1, 31),
+            datetime=datetime(2025, 1, 31, 12, 0, 0),
+            create_date=datetime(2025, 1, 1, 12, 0, 0),
+            seance_length=3600,
+            attendance=1,
+        ),
+        Appointment(
+            id=4,
+            company_id=1,
+            staff_id=1,
+            client_id=2,
+            date=date(2025, 2, 20),
+            datetime=datetime(2025, 2, 20, 12, 0, 0),
+            create_date=datetime(2025, 2, 1, 10, 0, 0),
+            seance_length=3600,
+            attendance=0,
+        ),
+        Appointment(
+            id=5,
+            company_id=1,
+            staff_id=1,
+            client_id=3,
+            date=date(2025, 1, 1),
+            datetime=datetime(2025, 1, 1, 12, 0, 0),
+            create_date=datetime(2024, 12, 1, 12, 0, 0),
+            seance_length=3600,
+            attendance=1,
+        ),
+        Appointment(
+            id=6,
+            company_id=1,
+            staff_id=1,
+            client_id=3,
+            date=date(2025, 1, 20),
+            datetime=datetime(2025, 1, 20, 12, 0, 0),
+            create_date=datetime(2025, 1, 3, 10, 0, 0),
+            seance_length=3600,
+            attendance=0,
+        ),
+    ])
+    await async_session.commit()
+
+    async def override_db():
+        yield async_session
+
+    app.dependency_overrides[api.get_async_db] = override_db
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url='http://test') as client:
+        jan = await client.get(
+            '/dashboard/widget/plan_fact',
+            params={'start_date': '2025-01-01', 'end_date': '2025-01-31'},
+        )
+        feb = await client.get(
+            '/dashboard/widget/plan_fact',
+            params={'start_date': '2025-02-01', 'end_date': '2025-02-28'},
+        )
+    app.dependency_overrides.clear()
+
+    assert jan.status_code == 200
+    assert feb.status_code == 200
+
+    jan_branch = next(group for group in jan.json()['data']['groups'] if group['scope'] == 'branch')
+    feb_branch = next(group for group in feb.json()['data']['groups'] if group['scope'] == 'branch')
+    jan_cells = {cell['code']: cell for cell in jan_branch['metrics']}
+    feb_cells = {cell['code']: cell for cell in feb_branch['metrics']}
+    assert jan_cells['opz_qty']['fact'] == 1.0
+    assert feb_cells['opz_qty']['fact'] == 1.0
 
 
 @pytest.mark.asyncio
