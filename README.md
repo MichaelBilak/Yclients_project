@@ -36,9 +36,9 @@
 План хранится в таблице `plan_metrics`, факт считается из текущих данных YClients. Таблица поддерживает планы филиалов (`staff_id` пустой) и планы сотрудников (`staff_id` заполнен, `staff_category` = `barber` или `administrator`). Импорт поддерживает опубликованный Google Sheets CSV:
 
 ```env
-PLAN_SHEET_CSV_URL=https://docs.google.com/spreadsheets/d/.../export?format=csv&gid=...
+PLAN_SHEET_CSV_URL=https://docs.google.com/spreadsheets/d/1Ptl9C2DQqj_mKN9Gb_zdsZUZx8E_d3dJqlVucb-mbLw/export?format=csv&gid=0
 # Опционально. Если пусто, импорт попробует открыть лист `services` из той же таблицы.
-SERVICES_SHEET_CSV_URL=https://docs.google.com/spreadsheets/d/.../gviz/tq?tqx=out:csv&sheet=services
+SERVICES_SHEET_CSV_URL=https://docs.google.com/spreadsheets/d/1Ptl9C2DQqj_mKN9Gb_zdsZUZx8E_d3dJqlVucb-mbLw/gviz/tq?tqx=out:csv&sheet=services
 ```
 
 После изменения Google Sheet запустите импорт:
@@ -47,6 +47,20 @@ SERVICES_SHEET_CSV_URL=https://docs.google.com/spreadsheets/d/.../gviz/tq?tqx=ou
 curl -X POST http://127.0.0.1:8000/dashboard/plan/sync \
   -H "X-Sync-Token: your_token"
 ```
+
+Для справочника сотрудников в Google Sheets можно использовать CSV endpoint:
+
+```text
+/dashboard/staff_directory.csv
+```
+
+Через Vercel proxy это выглядит как:
+
+```text
+=IMPORTDATA("https://your-app.vercel.app/api/dashboard/staff_directory.csv")
+```
+
+По умолчанию CSV содержит только работающих сотрудников (`fired=0`). Для проверки всех строк, включая уволенных и устаревших, добавьте `?include_fired=1`. Колонки: `company_id`, `company_title`, `staff_id`, `staff_name`, `position`, `user_id`, `fired`, `working`, `bookable`.
 
 Этот же импорт обновляет метки услуг из листа `services`. Для расчета среднего чека по доп. услугам лист должен содержать `service_id` или пару `company_id` + `service_title`, а также колонку-метку вроде `доп услуга`, `метка доп услуг`, `is_extra` или `tag`. Значения `да`, `доп`, `extra`, `1` считаются доп. услугой; `нет`, `0`, `обычная` снимают метку.
 

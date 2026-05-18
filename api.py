@@ -164,6 +164,7 @@ async def root():
             "/sync/status": "Статус sync и очереди",
             "/export/csv/{table}": "Экспорт таблицы в CSV",
             "/dashboard/branches": "Филиалы (компании) для портала",
+            "/dashboard/staff_directory.csv": "CSV справочник сотрудников для Google Sheets",
             "/dashboard/bundle": "Сводка дашборда за период (JSON)",
             "/dashboard/widget/plan_fact": "План/факт по филиалам за период",
             "/dashboard/plan/sync": "Импорт плана из Google Sheets CSV",

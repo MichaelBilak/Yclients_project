@@ -905,6 +905,45 @@ async def branch_company_ids(db: AsyncSession) -> Optional[list[int]]:
     return [row[0] for row in r.all()]
 
 
+async def fetch_staff_directory(db: AsyncSession, include_fired: bool = False) -> list[dict[str, Any]]:
+    allowed = await branch_company_ids(db)
+    stmt = (
+        select(
+            Company.id.label('company_id'),
+            Company.title.label('company_title'),
+            Staff.id.label('staff_id'),
+            Staff.name.label('staff_name'),
+            Staff.position,
+            Staff.user_id,
+            Staff.fired,
+            Staff.bookable,
+        )
+        .select_from(Staff)
+        .join(Company, Company.id == Staff.company_id)
+        .order_by(Company.title.asc(), Staff.name.asc(), Staff.id.asc())
+    )
+    if allowed is not None:
+        stmt = stmt.where(Company.id.in_(allowed))
+    if not include_fired:
+        stmt = stmt.where(Staff.fired == 0)
+
+    rows = (await db.execute(stmt)).all()
+    return [
+        {
+            'company_id': row.company_id,
+            'company_title': row.company_title,
+            'staff_id': row.staff_id,
+            'staff_name': row.staff_name,
+            'position': row.position,
+            'user_id': row.user_id,
+            'fired': int(row.fired or 0),
+            'working': int((row.fired or 0) == 0),
+            'bookable': int(bool(row.bookable)),
+        }
+        for row in rows
+    ]
+
+
 async def fetch_branches(db: AsyncSession) -> list[dict[str, Any]]:
     allowed = await branch_company_ids(db)
     stmt = select(Company).order_by(Company.id.asc())

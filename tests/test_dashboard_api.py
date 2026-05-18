@@ -308,6 +308,37 @@ async def test_dashboard_branches_respects_portal_allowlist(async_session, monke
 
 
 @pytest.mark.asyncio
+async def test_dashboard_staff_directory_csv_exports_working_staff(async_session):
+    async_session.add(Group(id=1, title='G1'))
+    async_session.add(Company(id=1, title='Salon 1', group_id=1))
+    async_session.add(Company(id=2, title='Salon 2', group_id=1))
+    async_session.add(Staff(id=10, name='Active', position='Барбер', company_id=1, fired=0, bookable=True))
+    async_session.add(Staff(id=20, name='Fired', position='Барбер', company_id=1, fired=1, bookable=False))
+    async_session.add(Staff(id=30, name='Admin', position='Администратор', company_id=2, fired=0, user_id=500))
+    await async_session.commit()
+
+    async def override_db():
+        yield async_session
+
+    app.dependency_overrides[api.get_async_db] = override_db
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url='http://test') as client:
+        active_only = await client.get('/dashboard/staff_directory.csv')
+        all_staff = await client.get('/dashboard/staff_directory.csv', params={'include_fired': 1})
+    app.dependency_overrides.clear()
+
+    assert active_only.status_code == 200
+    assert active_only.headers['content-type'].startswith('text/csv')
+    assert 'company_id,company_title,staff_id,staff_name,position,user_id,fired,working,bookable' in active_only.text
+    assert '1,Salon 1,10,Active' in active_only.text
+    assert '20,Fired' not in active_only.text
+    assert '2,Salon 2,30,Admin' in active_only.text
+
+    assert all_staff.status_code == 200
+    assert '1,Salon 1,20,Fired' in all_staff.text
+
+
+@pytest.mark.asyncio
 async def test_dashboard_plan_fact_uses_plan_and_fact_formulas(async_session):
     async_session.add(Group(id=1, title='G1'))
     async_session.add(Company(id=1, title='Salon', group_id=1))

@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import csv
+import io
 from datetime import date
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import SYNC_API_TOKEN
@@ -13,6 +16,7 @@ from dashboard_service import (
     fetch_branches,
     fetch_plan_fact,
     fetch_revenue_daily,
+    fetch_staff_directory,
     fetch_summary,
     fetch_top_services,
 )
@@ -39,6 +43,35 @@ def _require_sync_token(x_sync_token: str | None) -> None:
 async def dashboard_branches(db: AsyncSession = Depends(get_async_db)):
     """Companies available as salon branches (filtered when system.portal_branches is populated)."""
     return {'success': True, 'data': await fetch_branches(db)}
+
+
+@router.get('/staff_directory.csv')
+async def dashboard_staff_directory_csv(
+    include_fired: bool = Query(False, description='Include fired/stale staff when true'),
+    db: AsyncSession = Depends(get_async_db),
+):
+    """CSV staff directory for Google Sheets IMPORTDATA."""
+    rows = await fetch_staff_directory(db, include_fired)
+    columns = [
+        'company_id',
+        'company_title',
+        'staff_id',
+        'staff_name',
+        'position',
+        'user_id',
+        'fired',
+        'working',
+        'bookable',
+    ]
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=columns)
+    writer.writeheader()
+    writer.writerows(rows)
+    return Response(
+        buffer.getvalue(),
+        media_type='text/csv; charset=utf-8',
+        headers={'Content-Disposition': 'inline; filename=staff_directory.csv'},
+    )
 
 
 @router.get('/widget/sync_status')
