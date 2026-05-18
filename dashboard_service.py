@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from typing import Any, Optional
 
-from sqlalchemy import and_, case, func, or_, select
+from sqlalchemy import String, and_, case, cast, func, or_, select
 from sqlalchemy.exc import DBAPIError, OperationalError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -411,19 +411,25 @@ async def fetch_top_services(
     limit: int = 10,
 ) -> list[dict[str, Any]]:
     rev = func.coalesce(func.sum(Transaction.cost * Transaction.amount), 0.0)
+    title_expr = func.trim(func.coalesce(func.nullif(Transaction.service_title, ''), Service.title, ''))
+    normalized_title = func.lower(func.replace(title_expr, 'ё', 'е'))
+    group_key = func.coalesce(func.nullif(normalized_title, ''), cast(Transaction.service_id, String))
     stmt = (
         select(
-            Transaction.service_id,
-            Transaction.service_title,
+            func.min(Transaction.service_id).label('service_id'),
+            func.min(title_expr).label('service_title'),
             func.sum(Transaction.amount).label('sold'),
             rev.label('revenue'),
+            func.count(func.distinct(Transaction.service_id)).label('service_count'),
+            func.count(func.distinct(Appointment.company_id)).label('branch_count'),
         )
         .select_from(Transaction)
         .join(Appointment, Appointment.id == Transaction.appointment_id)
+        .outerjoin(Service, Service.id == Transaction.service_id)
         .where(
             _appt_revenue_filters(start, end, company_id),
         )
-        .group_by(Transaction.service_id, Transaction.service_title)
+        .group_by(group_key)
         .order_by(rev.desc())
         .limit(limit)
     )
@@ -435,6 +441,8 @@ async def fetch_top_services(
             'title': r.service_title or '',
             'sold': int(r.sold or 0),
             'revenue': float(r.revenue or 0),
+            'service_count': int(r.service_count or 0),
+            'branch_count': int(r.branch_count or 0),
         })
     return out
 
@@ -743,8 +751,8 @@ def _staff_category(staff_row: Any, plan_category: str | None, plan_values: dict
 
 async def _fetch_company_staff(db: AsyncSession, company_id: int) -> list[Any]:
     stmt = (
-        select(Staff.id, Staff.name, Staff.position, Staff.user_id)
-        .where(Staff.company_id == company_id)
+        select(Staff.id, Staff.name, Staff.position, Staff.user_id, Staff.fired)
+        .where(Staff.company_id == company_id, Staff.fired == 0)
         .order_by(Staff.position.asc(), Staff.name.asc())
     )
     return list((await db.execute(stmt)).all())

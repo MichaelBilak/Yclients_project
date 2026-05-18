@@ -468,10 +468,11 @@ def sync_staff(api: YClientsAPI, db, company_id: str):
 
     try:
         cid = int(company_id)
+        staff_ids = {staff_member.get('id') for staff_member in staff_list if staff_member.get('id') is not None}
         existing_staff = load_existing_map(
             db,
             Staff,
-            (staff_member.get('id') for staff_member in staff_list),
+            staff_ids,
             Staff.id,
         )
         for s in staff_list:
@@ -487,6 +488,7 @@ def sync_staff(api: YClientsAPI, db, company_id: str):
                 position_title = pos
 
             user_id = s.get('user_id')
+            fired = int(bool(s.get('is_fired'))) if s.get('fired') is None else int(s.get('fired') or 0)
 
             obj = existing_staff.get(staff_id)
             if not obj:
@@ -498,6 +500,7 @@ def sync_staff(api: YClientsAPI, db, company_id: str):
                     rating=s.get('rating'),
                     votes_count=s.get('votes_count'),
                     bookable=s.get('bookable', True),
+                    fired=fired,
                     user_id=user_id,
                     company_id=cid,
                 )
@@ -510,7 +513,13 @@ def sync_staff(api: YClientsAPI, db, company_id: str):
                 obj.rating = s.get('rating')
                 obj.votes_count = s.get('votes_count')
                 obj.bookable = s.get('bookable', True)
+                obj.fired = fired
                 obj.user_id = user_id
+
+        stale_query = db.query(Staff).filter(Staff.company_id == cid)
+        if staff_ids:
+            stale_query = stale_query.filter(~Staff.id.in_(staff_ids))
+        stale_query.update({Staff.fired: 1}, synchronize_session=False)
 
         db.commit()
         print(f"  ✓ Сотрудники сохранены ({len(staff_list)} шт.)")

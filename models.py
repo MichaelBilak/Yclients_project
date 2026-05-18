@@ -96,6 +96,7 @@ class Staff(Base):
     rating = Column(Float)
     votes_count = Column(Integer)
     bookable = Column(Boolean, default=True)
+    fired = Column(Integer, nullable=False, default=0, index=True)
     user_id = Column(Integer, index=True)
     company_id = Column(Integer, ForeignKey('companies.id'), index=True)
 

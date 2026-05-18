@@ -309,6 +309,7 @@ async def api_staff(
         "rating": item.rating,
         "votes_count": item.votes_count,
         "bookable": item.bookable,
+        "fired": item.fired,
         "company_id": item.company_id,
     })
     return build_page_response(total, limit, offset, data)
