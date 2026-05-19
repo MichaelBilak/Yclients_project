@@ -60,7 +60,7 @@ curl -X POST http://127.0.0.1:8000/dashboard/plan/sync \
 =IMPORTDATA("https://your-app.vercel.app/api/dashboard/staff_directory.csv")
 ```
 
-По умолчанию CSV содержит только работающих сотрудников (`fired=0`). Для проверки всех строк, включая уволенных и устаревших, добавьте `?include_fired=1`. Колонки: `company_id`, `company_title`, `staff_id`, `staff_name`, `position`, `user_id`, `fired`, `working`, `bookable`.
+По умолчанию CSV содержит только работающих сотрудников (`fired=0`) и исключает служебные строки `Лист ожидания` / `Администратор ...`. Для проверки всех строк, включая уволенных и устаревших, добавьте `?include_fired=1`. Колонки: `company_id`, `company_title`, `staff_id`, `staff_name`, `position`, `user_id`, `fired`, `working`, `bookable`.
 
 Этот же импорт обновляет метки услуг из листа `services`. Для расчета среднего чека по доп. услугам лист должен содержать `service_id` или пару `company_id` + `service_title`, а также колонку-метку вроде `доп услуга`, `метка доп услуг`, `is_extra` или `tag`. Значения `да`, `доп`, `extra`, `1` считаются доп. услугой; `нет`, `0`, `обычная` снимают метку.
 

@@ -32,6 +32,7 @@ from plan_config import (
 
 GOODS_SALE_TYPE_ID = 1
 WAITLIST_STAFF_NAME = 'лист ожидания'
+ADMIN_PLACEHOLDER_STAFF_PREFIX = 'администратор'
 
 WAX_TITLE_PARTS = ('воск',)
 CAMOUFLAGE_TITLE_PARTS = ('камуфляж',)
@@ -67,6 +68,10 @@ def _safe_div(numerator: float, denominator: float) -> float:
 
 def _is_waitlist_staff_name(value: Any) -> bool:
     return str(value or '').strip().casefold() == WAITLIST_STAFF_NAME
+
+
+def _is_admin_placeholder_staff_name(value: Any) -> bool:
+    return str(value or '').strip().casefold().startswith(ADMIN_PLACEHOLDER_STAFF_PREFIX)
 
 
 def _coerce_date(value: Any) -> date:
@@ -1072,7 +1077,10 @@ async def fetch_staff_directory(db: AsyncSession, include_fired: bool = False) -
             'bookable': int(bool(row.bookable)),
         }
         for row in rows
-        if not _is_waitlist_staff_name(row.staff_name)
+        if (
+            not _is_waitlist_staff_name(row.staff_name)
+            and not _is_admin_placeholder_staff_name(row.staff_name)
+        )
     ]
 
 
