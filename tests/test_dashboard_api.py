@@ -192,9 +192,13 @@ async def test_dashboard_summary_split_revenue_and_average_checks(async_session)
     assert data['revenue']['goods_revenue'] == 600.0
     assert data['revenue']['extra_service_revenue'] == 500.0
     assert data['revenue']['appointments'] == 2
+    assert data['revenue']['service_count'] == 3.0
+    assert data['revenue']['goods_count'] == 1.0
+    assert data['revenue']['extra_service_count'] == 1.0
     assert data['revenue']['extra_service_appointments'] == 1
     assert data['average_check']['total'] == 1800.0
     assert data['average_check']['services'] == 1500.0
+    assert data['average_check']['goods'] == 300.0
     assert data['average_check']['extra_services'] == 250.0
 
 

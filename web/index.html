@@ -430,33 +430,33 @@
       <a class="tab" href="#plan-fact" data-view-link="plan">План / факт</a>
     </nav>
 
-    <section class="toolbar" aria-label="Фильтры дашборда">
-      <label>
-        С
-        <input type="date" id="start" />
-      </label>
-      <label>
-        По
-        <input type="date" id="end" />
-      </label>
-      <label>
-        Филиал
-        <select id="branch">
-          <option value="">Все филиалы</option>
-        </select>
-      </label>
-      <label>
-        Работник
-        <select id="staff">
-          <option value="">Все работники</option>
-        </select>
-      </label>
-      <button type="button" id="load">Обновить</button>
-    </section>
-
     <div class="alert" id="error"></div>
 
     <section class="view active" id="overview-view" data-view="overview">
+      <section class="toolbar" aria-label="Фильтры обзора">
+        <label>
+          С
+          <input type="date" id="overview-start" />
+        </label>
+        <label>
+          По
+          <input type="date" id="overview-end" />
+        </label>
+        <label>
+          Филиал
+          <select id="overview-branch">
+            <option value="">Все филиалы</option>
+          </select>
+        </label>
+        <label>
+          Работник
+          <select id="overview-staff">
+            <option value="">Все работники</option>
+          </select>
+        </label>
+        <button type="button" id="overview-load">Обновить</button>
+      </section>
+
       <section class="kpi" id="kpi"></section>
 
       <section class="grid">
@@ -495,6 +495,30 @@
     </section>
 
     <section class="view" id="plan-view" data-view="plan">
+      <section class="toolbar" aria-label="Фильтры план-факт">
+        <label>
+          С
+          <input type="date" id="plan-start" />
+        </label>
+        <label>
+          По
+          <input type="date" id="plan-end" />
+        </label>
+        <label>
+          Филиал
+          <select id="plan-branch">
+            <option value="">Все филиалы</option>
+          </select>
+        </label>
+        <label>
+          Работник
+          <select id="plan-staff">
+            <option value="">Все работники</option>
+          </select>
+        </label>
+        <button type="button" id="plan-load">Обновить</button>
+      </section>
+
       <div class="panel wide">
         <div class="panel-title">
           <h2>План / факт</h2>

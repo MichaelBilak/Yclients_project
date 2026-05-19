@@ -144,6 +144,24 @@ async def _goods_revenue_total(
     return float(row.revenue or 0)
 
 
+async def _goods_sold_count(
+    db: AsyncSession,
+    dr: DateRange,
+    company_id: Optional[int],
+    staff_id: Optional[int] = None,
+) -> float:
+    sold_qty = func.coalesce(
+        func.sum(func.abs(func.coalesce(GoodTransaction.amount, 0.0))),
+        0.0,
+    )
+    stmt = (
+        select(sold_qty.label('qty'))
+        .where(_goods_revenue_filters(dr.start, dr.end, company_id, staff_id))
+    )
+    row = (await db.execute(stmt)).one()
+    return float(row.qty or 0)
+
+
 def _title_matches(title_expr, parts: tuple[str, ...]):
     conditions = []
     for part in parts:
@@ -250,10 +268,22 @@ async def _revenue_block(
         (ServiceLabel.is_extra.is_(True), Appointment.id),
         else_=None,
     )
+    service_count = func.coalesce(func.sum(func.coalesce(Transaction.amount, 0)), 0)
+    extra_service_count = func.coalesce(
+        func.sum(
+            case(
+                (ServiceLabel.is_extra.is_(True), func.coalesce(Transaction.amount, 0)),
+                else_=0,
+            )
+        ),
+        0,
+    )
     stmt = (
         select(
             rev.label('revenue'),
             extra_rev.label('extra_service_revenue'),
+            service_count.label('service_count'),
+            extra_service_count.label('extra_service_count'),
             func.count(func.distinct(Appointment.id)).label('appointments'),
             func.count(func.distinct(extra_appt)).label('extra_service_appointments'),
             func.count(func.distinct(Appointment.client_id)).label('unique_clients'),
@@ -267,11 +297,15 @@ async def _revenue_block(
     service_revenue = float(row.revenue or 0)
     extra_service_revenue = float(row.extra_service_revenue or 0)
     goods_revenue = await _goods_revenue_total(db, dr, company_id, staff_id)
+    goods_count = await _goods_sold_count(db, dr, company_id, staff_id)
     return {
         'revenue': service_revenue + goods_revenue,
         'service_revenue': service_revenue,
         'goods_revenue': goods_revenue,
         'extra_service_revenue': extra_service_revenue,
+        'service_count': float(row.service_count or 0),
+        'goods_count': goods_count,
+        'extra_service_count': float(row.extra_service_count or 0),
         'appointments': int(row.appointments or 0),
         'extra_service_appointments': int(row.extra_service_appointments or 0),
         'unique_clients': int(row.unique_clients or 0),
@@ -299,6 +333,8 @@ async def fetch_summary(
     prev_avg_total = _safe_div(prev_rev, prev_appointments)
     cur_avg_services = _safe_div(cur['service_revenue'], cur_appointments)
     prev_avg_services = _safe_div(prev['service_revenue'], prev_appointments)
+    cur_avg_goods = _safe_div(cur['goods_revenue'], cur_appointments)
+    prev_avg_goods = _safe_div(prev['goods_revenue'], prev_appointments)
     cur_avg_extra_services = _safe_div(cur['extra_service_revenue'], cur_appointments)
     prev_avg_extra_services = _safe_div(prev['extra_service_revenue'], prev_appointments)
 
@@ -331,6 +367,18 @@ async def fetch_summary(
             'extra_service_revenue_change_pct': _pct_change(
                 float(cur['extra_service_revenue']), float(prev['extra_service_revenue'])
             ),
+            'service_count': cur['service_count'],
+            'service_count_change_pct': _pct_change(
+                float(cur['service_count']), float(prev['service_count'])
+            ),
+            'goods_count': cur['goods_count'],
+            'goods_count_change_pct': _pct_change(
+                float(cur['goods_count']), float(prev['goods_count'])
+            ),
+            'extra_service_count': cur['extra_service_count'],
+            'extra_service_count_change_pct': _pct_change(
+                float(cur['extra_service_count']), float(prev['extra_service_count'])
+            ),
             'appointments': cur['appointments'],
             'appointments_change_pct': _pct_change(
                 float(cur['appointments']), float(prev['appointments'])
@@ -344,9 +392,11 @@ async def fetch_summary(
         'average_check': {
             'total': cur_avg_total,
             'services': cur_avg_services,
+            'goods': cur_avg_goods,
             'extra_services': cur_avg_extra_services,
             'total_change_pct': _pct_change(cur_avg_total, prev_avg_total),
             'services_change_pct': _pct_change(cur_avg_services, prev_avg_services),
+            'goods_change_pct': _pct_change(cur_avg_goods, prev_avg_goods),
             'extra_services_change_pct': _pct_change(
                 cur_avg_extra_services,
                 prev_avg_extra_services,

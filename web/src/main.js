@@ -4,11 +4,6 @@ const apiBase = import.meta.env.VITE_API_BASE || '';
 const apiKey = import.meta.env.VITE_API_KEY || '';
 
 const els = {
-  start: document.getElementById('start'),
-  end: document.getElementById('end'),
-  branch: document.getElementById('branch'),
-  staff: document.getElementById('staff'),
-  load: document.getElementById('load'),
   kpi: document.getElementById('kpi'),
   error: document.getElementById('error'),
   apiState: document.getElementById('api-state'),
@@ -29,6 +24,23 @@ const els = {
   viewLinks: [...document.querySelectorAll('[data-view-link]')],
 };
 
+const filterEls = {
+  overview: {
+    start: document.getElementById('overview-start'),
+    end: document.getElementById('overview-end'),
+    branch: document.getElementById('overview-branch'),
+    staff: document.getElementById('overview-staff'),
+    load: document.getElementById('overview-load'),
+  },
+  plan: {
+    start: document.getElementById('plan-start'),
+    end: document.getElementById('plan-end'),
+    branch: document.getElementById('plan-branch'),
+    staff: document.getElementById('plan-staff'),
+    load: document.getElementById('plan-load'),
+  },
+};
+
 const charts = {
   revenue: null,
   appointments: null,
@@ -36,7 +48,7 @@ const charts = {
 };
 
 let activeView = 'overview';
-let staffOptions = [];
+let branchOptions = [];
 
 function headers() {
   const h = {};
@@ -162,11 +174,11 @@ async function fetchJson(path, params) {
   );
 }
 
-function defaultDates() {
+function defaultDates(filter) {
   const now = new Date();
   const start = new Date(now.getFullYear(), now.getMonth(), 1);
-  els.end.value = formatInputDate(now);
-  els.start.value = formatInputDate(start);
+  filter.end.value = formatInputDate(now);
+  filter.start.value = formatInputDate(start);
 }
 
 function formatInputDate(date) {
@@ -179,7 +191,6 @@ function formatInputDate(date) {
 function renderKpi(summary) {
   const revenue = summary.revenue || {};
   const averageCheck = summary.average_check || {};
-  const appointments = summary.appointments_breakdown || {};
   const cards = [
     {
       label: 'Общая выручка',
@@ -188,16 +199,10 @@ function renderKpi(summary) {
       deltaValue: revenue.change_pct,
     },
     {
-      label: 'Выручка по услугам',
-      value: formatMoney(revenue.service_revenue),
-      delta: formatPct(revenue.service_revenue_change_pct),
-      deltaValue: revenue.service_revenue_change_pct,
-    },
-    {
-      label: 'Выручка по товарам',
-      value: formatMoney(revenue.goods_revenue),
-      delta: formatPct(revenue.goods_revenue_change_pct),
-      deltaValue: revenue.goods_revenue_change_pct,
+      label: 'Посещенные записи',
+      value: formatNumber(revenue.appointments),
+      delta: formatPct(revenue.appointments_change_pct),
+      deltaValue: revenue.appointments_change_pct,
     },
     {
       label: 'Средний чек общий',
@@ -206,34 +211,58 @@ function renderKpi(summary) {
       deltaValue: averageCheck.total_change_pct,
     },
     {
+      label: 'Выручка по услугам',
+      value: formatMoney(revenue.service_revenue),
+      delta: formatPct(revenue.service_revenue_change_pct),
+      deltaValue: revenue.service_revenue_change_pct,
+    },
+    {
+      label: 'Кол-во оказанных услуг',
+      value: formatNumber(revenue.service_count),
+      delta: formatPct(revenue.service_count_change_pct),
+      deltaValue: revenue.service_count_change_pct,
+    },
+    {
       label: 'Средний чек по услугам',
       value: formatMoney(averageCheck.services),
       delta: formatPct(averageCheck.services_change_pct),
       deltaValue: averageCheck.services_change_pct,
     },
     {
+      label: 'Выручка по товарам',
+      value: formatMoney(revenue.goods_revenue),
+      delta: formatPct(revenue.goods_revenue_change_pct),
+      deltaValue: revenue.goods_revenue_change_pct,
+    },
+    {
+      label: 'Кол-во проданных товаров',
+      value: formatNumber(revenue.goods_count),
+      delta: formatPct(revenue.goods_count_change_pct),
+      deltaValue: revenue.goods_count_change_pct,
+    },
+    {
+      label: 'Средний чек по товарам',
+      value: formatMoney(averageCheck.goods),
+      delta: formatPct(averageCheck.goods_change_pct),
+      deltaValue: averageCheck.goods_change_pct,
+    },
+    {
+      label: 'Выручка по доп. услугам',
+      value: formatMoney(revenue.extra_service_revenue),
+      delta: formatPct(revenue.extra_service_revenue_change_pct),
+      deltaValue: revenue.extra_service_revenue_change_pct,
+    },
+    {
+      label: 'Кол-во оказанных доп. услуг',
+      value: formatNumber(revenue.extra_service_count),
+      delta: formatPct(revenue.extra_service_count_change_pct),
+      deltaValue: revenue.extra_service_count_change_pct,
+    },
+    {
       label: 'Средний чек по доп. услугам',
       value: formatMoney(averageCheck.extra_services),
       delta: formatPct(averageCheck.extra_services_change_pct),
       deltaValue: averageCheck.extra_services_change_pct,
-    },
-    {
-      label: 'Посещенные записи',
-      value: formatNumber(revenue.appointments),
-      delta: formatPct(revenue.appointments_change_pct),
-      deltaValue: revenue.appointments_change_pct,
-    },
-    {
-      label: 'Уникальные клиенты',
-      value: formatNumber(revenue.unique_clients),
-      delta: formatPct(revenue.unique_clients_change_pct),
-      deltaValue: revenue.unique_clients_change_pct,
-    },
-    {
-      label: 'Отмены / ожидание',
-      value: `${formatNumber(appointments.cancelled)} / ${formatNumber(appointments.pending)}`,
-      delta: `${formatNumber(appointments.attended)} посещений`,
-      deltaValue: null,
     },
   ];
 
@@ -504,39 +533,59 @@ function renderBundle(bundle) {
 async function loadBranches() {
   try {
     const payload = await fetchJson('/dashboard/branches');
-    const branches = payload.data || [];
-    els.branch.innerHTML = '<option value="">Все филиалы</option>';
-    branches.forEach((branch) => {
-      const option = document.createElement('option');
-      option.value = branch.id;
-      option.textContent = branch.title;
-      els.branch.appendChild(option);
-    });
+    branchOptions = payload.data || [];
+    Object.values(filterEls).forEach((filter) => renderBranchOptions(filter));
   } catch (error) {
     showError(error.message);
   }
 }
 
-async function loadStaff() {
-  const selected = els.staff.value;
+function renderBranchOptions(filter) {
+  const selected = filter.branch.value;
+  filter.branch.innerHTML = '<option value="">Все филиалы</option>';
+  branchOptions.forEach((branch) => {
+    const option = document.createElement('option');
+    option.value = branch.id;
+    option.textContent = branch.title;
+    filter.branch.appendChild(option);
+  });
+  filter.branch.value = branchOptions.some((branch) => String(branch.id) === selected) ? selected : '';
+}
+
+async function loadStaff(filter) {
+  const selected = filter.staff.value;
   try {
     const payload = await fetchJson('/dashboard/staff', {
-      company_id: els.branch.value,
+      company_id: filter.branch.value,
     });
-    staffOptions = payload.data || [];
-    els.staff.innerHTML = '<option value="">Все работники</option>';
+    const staffOptions = payload.data || [];
+    filter.staff.innerHTML = '<option value="">Все работники</option>';
     staffOptions.forEach((staff) => {
       const option = document.createElement('option');
       option.value = staff.id;
-      option.textContent = els.branch.value
+      option.textContent = filter.branch.value
         ? staff.name
         : `${staff.name} · ${staff.company_title || `Филиал ${staff.company_id}`}`;
-      els.staff.appendChild(option);
+      filter.staff.appendChild(option);
     });
-    els.staff.value = staffOptions.some((staff) => String(staff.id) === selected) ? selected : '';
+    filter.staff.value = staffOptions.some((staff) => String(staff.id) === selected) ? selected : '';
   } catch (error) {
     showError(error.message);
   }
+}
+
+function filterParams(filter) {
+  return {
+    start_date: filter.start.value,
+    end_date: filter.end.value,
+    company_id: filter.branch.value,
+    staff_id: filter.staff.value,
+  };
+}
+
+function setFilterLoading(filter, isLoading) {
+  filter.load.disabled = isLoading;
+  filter.load.textContent = isLoading ? 'Загрузка' : 'Обновить';
 }
 
 async function loadSyncStatus() {
@@ -571,50 +620,38 @@ function setActiveView(view) {
 }
 
 async function loadPlanFact() {
+  const filter = filterEls.plan;
   clearError();
-  els.load.disabled = true;
-  els.load.textContent = 'Загрузка';
+  setFilterLoading(filter, true);
   setApiState('API: загрузка', 'warn');
 
   try {
-    const payload = await fetchJson('/dashboard/widget/plan_fact', {
-      start_date: els.start.value,
-      end_date: els.end.value,
-      company_id: els.branch.value,
-      staff_id: els.staff.value,
-    });
+    const payload = await fetchJson('/dashboard/widget/plan_fact', filterParams(filter));
     renderPlanFact(payload.data);
     setApiState('API: подключен', 'ok');
     await loadSyncStatus();
   } catch (error) {
     showError(error.message);
   } finally {
-    els.load.disabled = false;
-    els.load.textContent = 'Обновить';
+    setFilterLoading(filter, false);
   }
 }
 
 async function loadDashboard() {
+  const filter = filterEls.overview;
   clearError();
-  els.load.disabled = true;
-  els.load.textContent = 'Загрузка';
+  setFilterLoading(filter, true);
   setApiState('API: загрузка', 'warn');
 
   try {
-    const payload = await fetchJson('/dashboard/bundle', {
-      start_date: els.start.value,
-      end_date: els.end.value,
-      company_id: els.branch.value,
-      staff_id: els.staff.value,
-    });
+    const payload = await fetchJson('/dashboard/bundle', filterParams(filter));
     renderBundle(payload.data);
     setApiState('API: подключен', 'ok');
     await loadSyncStatus();
   } catch (error) {
     showError(error.message);
   } finally {
-    els.load.disabled = false;
-    els.load.textContent = 'Обновить';
+    setFilterLoading(filter, false);
   }
 }
 
@@ -627,20 +664,28 @@ async function loadCurrentView() {
 }
 
 async function init() {
-  defaultDates();
+  Object.values(filterEls).forEach((filter) => defaultDates(filter));
   renderServicesTable([]);
   await loadBranches();
-  await loadStaff();
+  await Promise.all(Object.values(filterEls).map((filter) => loadStaff(filter)));
   setActiveView(viewFromHash());
   await loadCurrentView();
 }
 
-els.load.addEventListener('click', () => loadCurrentView());
-els.branch.addEventListener('change', async () => {
-  await loadStaff();
-  await loadCurrentView();
+filterEls.overview.load.addEventListener('click', () => loadDashboard());
+filterEls.overview.branch.addEventListener('change', async () => {
+  await loadStaff(filterEls.overview);
+  await loadDashboard();
 });
-els.staff.addEventListener('change', () => loadCurrentView());
+filterEls.overview.staff.addEventListener('change', () => loadDashboard());
+
+filterEls.plan.load.addEventListener('click', () => loadPlanFact());
+filterEls.plan.branch.addEventListener('change', async () => {
+  await loadStaff(filterEls.plan);
+  await loadPlanFact();
+});
+filterEls.plan.staff.addEventListener('change', () => loadPlanFact());
+
 window.addEventListener('hashchange', async () => {
   const nextView = viewFromHash();
   if (nextView === activeView) return;
