@@ -91,7 +91,7 @@
 
     .toolbar {
       display: grid;
-      grid-template-columns: minmax(150px, 1fr) minmax(150px, 1fr) minmax(240px, 1.6fr) auto;
+      grid-template-columns: minmax(150px, 1fr) minmax(150px, 1fr) minmax(220px, 1.45fr) minmax(220px, 1.45fr) auto;
       gap: 12px;
       align-items: end;
       padding: 16px;
@@ -443,6 +443,12 @@
         Филиал
         <select id="branch">
           <option value="">Все филиалы</option>
+        </select>
+      </label>
+      <label>
+        Работник
+        <select id="staff">
+          <option value="">Все работники</option>
         </select>
       </label>
       <button type="button" id="load">Обновить</button>

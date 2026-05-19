@@ -16,6 +16,7 @@ from dashboard_service import (
     fetch_branches,
     fetch_plan_fact,
     fetch_revenue_daily,
+    fetch_staff,
     fetch_staff_directory,
     fetch_summary,
     fetch_top_services,
@@ -43,6 +44,15 @@ def _require_sync_token(x_sync_token: str | None) -> None:
 async def dashboard_branches(db: AsyncSession = Depends(get_async_db)):
     """Companies available as salon branches (filtered when system.portal_branches is populated)."""
     return {'success': True, 'data': await fetch_branches(db)}
+
+
+@router.get('/staff')
+async def dashboard_staff(
+    company_id: int | None = Query(None, description='Optional YClients company (salon) id'),
+    db: AsyncSession = Depends(get_async_db),
+):
+    """Active staff available for dashboard filters."""
+    return {'success': True, 'data': await fetch_staff(db, company_id)}
 
 
 @router.get('/staff_directory.csv')
@@ -87,10 +97,11 @@ async def dashboard_widget_summary(
     start_date: date = Query(..., description='Inclusive period start'),
     end_date: date = Query(..., description='Inclusive period end'),
     company_id: int | None = Query(None, description='Optional YClients company (salon) id'),
+    staff_id: int | None = Query(None, description='Optional active staff id'),
     db: AsyncSession = Depends(get_async_db),
 ):
     start, end = _parse_range(start_date, end_date)
-    return {'success': True, 'data': await fetch_summary(db, start, end, company_id)}
+    return {'success': True, 'data': await fetch_summary(db, start, end, company_id, staff_id)}
 
 
 @router.get('/widget/revenue_daily')
@@ -98,10 +109,11 @@ async def dashboard_widget_revenue_daily(
     start_date: date = Query(...),
     end_date: date = Query(...),
     company_id: int | None = Query(None),
+    staff_id: int | None = Query(None),
     db: AsyncSession = Depends(get_async_db),
 ):
     start, end = _parse_range(start_date, end_date)
-    return {'success': True, 'data': await fetch_revenue_daily(db, start, end, company_id)}
+    return {'success': True, 'data': await fetch_revenue_daily(db, start, end, company_id, staff_id)}
 
 
 @router.get('/widget/top_services')
@@ -109,11 +121,12 @@ async def dashboard_widget_top_services(
     start_date: date = Query(...),
     end_date: date = Query(...),
     company_id: int | None = Query(None),
+    staff_id: int | None = Query(None),
     limit: int = Query(10, ge=1, le=50),
     db: AsyncSession = Depends(get_async_db),
 ):
     start, end = _parse_range(start_date, end_date)
-    return {'success': True, 'data': await fetch_top_services(db, start, end, company_id, limit)}
+    return {'success': True, 'data': await fetch_top_services(db, start, end, company_id, limit, staff_id)}
 
 
 @router.get('/widget/plan_fact')
@@ -121,10 +134,11 @@ async def dashboard_widget_plan_fact(
     start_date: date = Query(...),
     end_date: date = Query(...),
     company_id: int | None = Query(None),
+    staff_id: int | None = Query(None),
     db: AsyncSession = Depends(get_async_db),
 ):
     start, end = _parse_range(start_date, end_date)
-    return {'success': True, 'data': await fetch_plan_fact(db, start, end, company_id)}
+    return {'success': True, 'data': await fetch_plan_fact(db, start, end, company_id, staff_id)}
 
 
 @router.post('/plan/sync')
@@ -141,13 +155,14 @@ async def dashboard_bundle(
     start_date: date = Query(...),
     end_date: date = Query(...),
     company_id: int | None = Query(None),
+    staff_id: int | None = Query(None),
     db: AsyncSession = Depends(get_async_db),
 ):
     """Single round-trip: summary + daily revenue + top services (sequential server-side)."""
     start, end = _parse_range(start_date, end_date)
-    summary = await fetch_summary(db, start, end, company_id)
-    daily = await fetch_revenue_daily(db, start, end, company_id)
-    services = await fetch_top_services(db, start, end, company_id, 10)
+    summary = await fetch_summary(db, start, end, company_id, staff_id)
+    daily = await fetch_revenue_daily(db, start, end, company_id, staff_id)
+    services = await fetch_top_services(db, start, end, company_id, 10, staff_id)
     return {
         'success': True,
         'data': {

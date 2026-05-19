@@ -7,6 +7,7 @@ const els = {
   start: document.getElementById('start'),
   end: document.getElementById('end'),
   branch: document.getElementById('branch'),
+  staff: document.getElementById('staff'),
   load: document.getElementById('load'),
   kpi: document.getElementById('kpi'),
   error: document.getElementById('error'),
@@ -35,6 +36,7 @@ const charts = {
 };
 
 let activeView = 'overview';
+let staffOptions = [];
 
 function headers() {
   const h = {};
@@ -477,8 +479,9 @@ function renderPlanFact(planFact) {
 
   const planPeriod = planFact?.plan_period;
   const planPeriodText = planPeriod ? ` · план ${planPeriod.start} .. ${planPeriod.end}` : '';
+  const selectedStaff = planFact?.selected_staff;
   const scopeText = planFact?.view_scope === 'staff'
-    ? `${planFact.branch?.title || 'Филиал'} · сотрудники`
+    ? `${planFact.branch?.title || 'Филиал'} · ${selectedStaff?.name || 'сотрудники'}`
     : 'сеть и филиалы';
   els.planMeta.textContent = `${scopeText} · ${groups.length} строк${planPeriodText}`;
 }
@@ -509,6 +512,28 @@ async function loadBranches() {
       option.textContent = branch.title;
       els.branch.appendChild(option);
     });
+  } catch (error) {
+    showError(error.message);
+  }
+}
+
+async function loadStaff() {
+  const selected = els.staff.value;
+  try {
+    const payload = await fetchJson('/dashboard/staff', {
+      company_id: els.branch.value,
+    });
+    staffOptions = payload.data || [];
+    els.staff.innerHTML = '<option value="">Все работники</option>';
+    staffOptions.forEach((staff) => {
+      const option = document.createElement('option');
+      option.value = staff.id;
+      option.textContent = els.branch.value
+        ? staff.name
+        : `${staff.name} · ${staff.company_title || `Филиал ${staff.company_id}`}`;
+      els.staff.appendChild(option);
+    });
+    els.staff.value = staffOptions.some((staff) => String(staff.id) === selected) ? selected : '';
   } catch (error) {
     showError(error.message);
   }
@@ -556,6 +581,7 @@ async function loadPlanFact() {
       start_date: els.start.value,
       end_date: els.end.value,
       company_id: els.branch.value,
+      staff_id: els.staff.value,
     });
     renderPlanFact(payload.data);
     setApiState('API: подключен', 'ok');
@@ -579,6 +605,7 @@ async function loadDashboard() {
       start_date: els.start.value,
       end_date: els.end.value,
       company_id: els.branch.value,
+      staff_id: els.staff.value,
     });
     renderBundle(payload.data);
     setApiState('API: подключен', 'ok');
@@ -603,12 +630,17 @@ async function init() {
   defaultDates();
   renderServicesTable([]);
   await loadBranches();
+  await loadStaff();
   setActiveView(viewFromHash());
   await loadCurrentView();
 }
 
 els.load.addEventListener('click', () => loadCurrentView());
-els.branch.addEventListener('change', () => loadCurrentView());
+els.branch.addEventListener('change', async () => {
+  await loadStaff();
+  await loadCurrentView();
+});
+els.staff.addEventListener('change', () => loadCurrentView());
 window.addEventListener('hashchange', async () => {
   const nextView = viewFromHash();
   if (nextView === activeView) return;

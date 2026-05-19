@@ -31,6 +31,7 @@ from plan_config import (
 )
 
 GOODS_SALE_TYPE_ID = 1
+WAITLIST_STAFF_NAME = 'лист ожидания'
 
 WAX_TITLE_PARTS = ('воск',)
 CAMOUFLAGE_TITLE_PARTS = ('камуфляж',)
@@ -62,6 +63,18 @@ def _pct_change(current: float, previous: float) -> Optional[float]:
 
 def _safe_div(numerator: float, denominator: float) -> float:
     return float(numerator or 0) / float(denominator or 0) if denominator else 0.0
+
+
+def _is_waitlist_staff_name(value: Any) -> bool:
+    return str(value or '').strip().casefold() == WAITLIST_STAFF_NAME
+
+
+def _coerce_date(value: Any) -> date:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    return date.fromisoformat(str(value)[:10])
 
 
 def _appt_revenue_filters(
@@ -270,12 +283,13 @@ async def fetch_summary(
     start: date,
     end: date,
     company_id: Optional[int] = None,
+    staff_id: Optional[int] = None,
 ) -> dict[str, Any]:
     current_dr = DateRange(start=start, end=end)
     prev_dr = current_dr.previous_period()
 
-    cur = await _revenue_block(db, current_dr, company_id)
-    prev = await _revenue_block(db, prev_dr, company_id)
+    cur = await _revenue_block(db, current_dr, company_id, staff_id)
+    prev = await _revenue_block(db, prev_dr, company_id, staff_id)
 
     cur_rev = cur['revenue']
     prev_rev = prev['revenue']
@@ -295,7 +309,7 @@ async def fetch_summary(
     att_stmt = (
         select(attended, cancelled, pending)
         .select_from(Appointment)
-        .where(_appt_all_filters(start, end, company_id))
+        .where(_appt_all_filters(start, end, company_id, staff_id))
     )
     att_row = (await db.execute(att_stmt)).one()
 
@@ -353,6 +367,7 @@ async def fetch_revenue_daily(
     start: date,
     end: date,
     company_id: Optional[int] = None,
+    staff_id: Optional[int] = None,
 ) -> list[dict[str, Any]]:
     rev = func.coalesce(func.sum(Transaction.cost * Transaction.amount), 0.0)
     svc_stmt = (
@@ -364,7 +379,7 @@ async def fetch_revenue_daily(
         .select_from(Appointment)
         .outerjoin(Transaction, Transaction.appointment_id == Appointment.id)
         .where(
-            _appt_revenue_filters(start, end, company_id),
+            _appt_revenue_filters(start, end, company_id, staff_id),
         )
         .group_by(Appointment.date)
     )
@@ -375,7 +390,7 @@ async def fetch_revenue_daily(
             goods_day.label('d'),
             func.coalesce(func.sum(GoodTransaction.cost), 0.0).label('revenue'),
         )
-        .where(_goods_revenue_filters(start, end, company_id))
+        .where(_goods_revenue_filters(start, end, company_id, staff_id))
         .group_by(goods_day)
     )
 
@@ -384,12 +399,14 @@ async def fetch_revenue_daily(
 
     by_date: dict[date, dict[str, float | int]] = {}
     for r in svc_rows:
-        by_date.setdefault(r.d, {'service_revenue': 0.0, 'goods_revenue': 0.0, 'appointments': 0})
-        by_date[r.d]['service_revenue'] = float(r.revenue or 0)
-        by_date[r.d]['appointments'] = int(r.appointments or 0)
+        day = _coerce_date(r.d)
+        by_date.setdefault(day, {'service_revenue': 0.0, 'goods_revenue': 0.0, 'appointments': 0})
+        by_date[day]['service_revenue'] = float(r.revenue or 0)
+        by_date[day]['appointments'] = int(r.appointments or 0)
     for r in goods_rows:
-        by_date.setdefault(r.d, {'service_revenue': 0.0, 'goods_revenue': 0.0, 'appointments': 0})
-        by_date[r.d]['goods_revenue'] = float(r.revenue or 0)
+        day = _coerce_date(r.d)
+        by_date.setdefault(day, {'service_revenue': 0.0, 'goods_revenue': 0.0, 'appointments': 0})
+        by_date[day]['goods_revenue'] = float(r.revenue or 0)
 
     return [
         {
@@ -409,6 +426,7 @@ async def fetch_top_services(
     end: date,
     company_id: Optional[int] = None,
     limit: int = 10,
+    staff_id: Optional[int] = None,
 ) -> list[dict[str, Any]]:
     rev = func.coalesce(func.sum(Transaction.cost * Transaction.amount), 0.0)
     title_expr = func.trim(func.coalesce(func.nullif(Transaction.service_title, ''), Service.title, ''))
@@ -427,7 +445,7 @@ async def fetch_top_services(
         .join(Appointment, Appointment.id == Transaction.appointment_id)
         .outerjoin(Service, Service.id == Transaction.service_id)
         .where(
-            _appt_revenue_filters(start, end, company_id),
+            _appt_revenue_filters(start, end, company_id, staff_id),
         )
         .group_by(group_key)
         .order_by(rev.desc())
@@ -749,13 +767,61 @@ def _staff_category(staff_row: Any, plan_category: str | None, plan_values: dict
     return 'barber' if plan_values else 'unknown'
 
 
-async def _fetch_company_staff(db: AsyncSession, company_id: int) -> list[Any]:
+async def _fetch_company_staff(
+    db: AsyncSession,
+    company_id: int,
+    staff_id: Optional[int] = None,
+) -> list[Any]:
     stmt = (
         select(Staff.id, Staff.name, Staff.position, Staff.user_id, Staff.fired)
         .where(Staff.company_id == company_id, Staff.fired == 0)
         .order_by(Staff.position.asc(), Staff.name.asc())
     )
-    return list((await db.execute(stmt)).all())
+    if staff_id is not None:
+        stmt = stmt.where(Staff.id == staff_id)
+    return [
+        row for row in (await db.execute(stmt)).all()
+        if not _is_waitlist_staff_name(row.name)
+    ]
+
+
+async def fetch_staff(
+    db: AsyncSession,
+    company_id: Optional[int] = None,
+) -> list[dict[str, Any]]:
+    allowed = await branch_company_ids(db)
+    stmt = (
+        select(
+            Staff.id,
+            Staff.name,
+            Staff.position,
+            Staff.user_id,
+            Staff.company_id,
+            Company.title.label('company_title'),
+        )
+        .select_from(Staff)
+        .join(Company, Company.id == Staff.company_id)
+        .where(Staff.fired == 0)
+        .order_by(Company.title.asc(), Staff.name.asc(), Staff.id.asc())
+    )
+    if allowed is not None:
+        stmt = stmt.where(Company.id.in_(allowed))
+    if company_id is not None:
+        stmt = stmt.where(Company.id == company_id)
+
+    rows = (await db.execute(stmt)).all()
+    return [
+        {
+            'id': row.id,
+            'name': row.name,
+            'position': row.position,
+            'user_id': row.user_id,
+            'company_id': row.company_id,
+            'company_title': row.company_title,
+        }
+        for row in rows
+        if not _is_waitlist_staff_name(row.name)
+    ]
 
 
 async def fetch_plan_fact(
@@ -763,8 +829,21 @@ async def fetch_plan_fact(
     start: date,
     end: date,
     company_id: Optional[int] = None,
+    staff_id: Optional[int] = None,
 ) -> dict[str, Any]:
     branches = await fetch_branches(db)
+    selected_staff: dict[str, Any] | None = None
+    if staff_id is not None:
+        staff_rows = await fetch_staff(db)
+        selected_staff = next((staff for staff in staff_rows if staff['id'] == staff_id), None)
+        if selected_staff is not None:
+            if company_id is None:
+                company_id = int(selected_staff['company_id'])
+            elif int(selected_staff['company_id']) != company_id:
+                selected_staff = None
+        if selected_staff is None and company_id is None:
+            company_id = -1
+
     if company_id is not None:
         branches = [branch for branch in branches if branch['id'] == company_id]
 
@@ -778,6 +857,7 @@ async def fetch_plan_fact(
                 'period': {'start': start.isoformat(), 'end': end.isoformat()},
                 'plan_period': {'start': plan_start.isoformat(), 'end': plan_end.isoformat()},
                 'view_scope': 'staff',
+                'selected_staff': selected_staff,
                 'metrics': list(PLAN_FACT_METRICS),
                 'metric_sets': _metric_sets_payload(),
                 'groups': [],
@@ -785,7 +865,7 @@ async def fetch_plan_fact(
 
         branch_id = company_ids[0]
         branch = branches[0]
-        staff_rows = await _fetch_company_staff(db, branch_id)
+        staff_rows = await _fetch_company_staff(db, branch_id, staff_id)
         staff_ids = [int(row.id) for row in staff_rows]
         plans_by_staff, categories_by_staff = await _plan_metric_components_by_staff(
             db,
@@ -850,6 +930,7 @@ async def fetch_plan_fact(
             'plan_period': {'start': plan_start.isoformat(), 'end': plan_end.isoformat()},
             'view_scope': 'staff',
             'branch': branch,
+            'selected_staff': selected_staff,
             'parent_group': parent_group,
             'metrics': list(PLAN_FACT_METRICS),
             'metric_sets': _metric_sets_payload(),
@@ -941,6 +1022,7 @@ async def fetch_staff_directory(db: AsyncSession, include_fired: bool = False) -
             'bookable': int(bool(row.bookable)),
         }
         for row in rows
+        if not _is_waitlist_staff_name(row.staff_name)
     ]
 
 

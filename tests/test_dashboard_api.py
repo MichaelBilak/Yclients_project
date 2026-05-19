@@ -339,6 +339,125 @@ async def test_dashboard_staff_directory_csv_exports_working_staff(async_session
 
 
 @pytest.mark.asyncio
+async def test_dashboard_staff_filter_excludes_waitlist_and_fired_staff(async_session):
+    async_session.add(Group(id=1, title='G1'))
+    async_session.add(Company(id=1, title='Salon 1', group_id=1))
+    async_session.add(Company(id=2, title='Salon 2', group_id=1))
+    async_session.add(Staff(id=10, name='Active', position='Барбер', company_id=1, fired=0))
+    async_session.add(Staff(id=20, name='Fired', position='Барбер', company_id=1, fired=1))
+    async_session.add(Staff(id=30, name='Лист ожидания', position='Системный', company_id=1, fired=0))
+    async_session.add(Staff(id=40, name='Admin', position='Администратор', company_id=2, fired=0))
+    await async_session.commit()
+
+    async def override_db():
+        yield async_session
+
+    app.dependency_overrides[api.get_async_db] = override_db
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url='http://test') as client:
+        all_staff = await client.get('/dashboard/staff')
+        branch_staff = await client.get('/dashboard/staff', params={'company_id': 1})
+    app.dependency_overrides.clear()
+
+    assert all_staff.status_code == 200
+    assert [row['name'] for row in all_staff.json()['data']] == ['Active', 'Admin']
+    assert branch_staff.status_code == 200
+    assert [row['name'] for row in branch_staff.json()['data']] == ['Active']
+
+
+@pytest.mark.asyncio
+async def test_dashboard_bundle_filters_by_staff(async_session):
+    async_session.add(Group(id=1, title='G1'))
+    async_session.add(Company(id=1, title='Salon', group_id=1))
+    async_session.add(Staff(id=1, name='Master 1', position='Барбер', company_id=1))
+    async_session.add(Staff(id=2, name='Master 2', position='Барбер', company_id=1))
+    async_session.add(Client(id=1, name='Client 1', company_id=1))
+    async_session.add(Client(id=2, name='Client 2', company_id=1))
+    await async_session.flush()
+    async_session.add_all([
+        Appointment(
+            id=1,
+            company_id=1,
+            staff_id=1,
+            client_id=1,
+            date=date(2025, 1, 10),
+            datetime=datetime(2025, 1, 10, 12, 0, 0),
+            create_date=datetime(2025, 1, 9, 12, 0, 0),
+            seance_length=3600,
+            attendance=1,
+        ),
+        Appointment(
+            id=2,
+            company_id=1,
+            staff_id=2,
+            client_id=2,
+            date=date(2025, 1, 10),
+            datetime=datetime(2025, 1, 10, 14, 0, 0),
+            create_date=datetime(2025, 1, 9, 14, 0, 0),
+            seance_length=3600,
+            attendance=1,
+        ),
+    ])
+    await async_session.flush()
+    async_session.add_all([
+        Transaction(id=1, appointment_id=1, service_id=10, service_title='Cut 1', cost=1000.0, first_cost=1000.0, amount=1, company_id=1),
+        Transaction(id=2, appointment_id=2, service_id=20, service_title='Cut 2', cost=2000.0, first_cost=2000.0, amount=1, company_id=1),
+        GoodTransaction(
+            id=1,
+            document_id=1,
+            type_id=1,
+            amount=-1.0,
+            cost=300.0,
+            master_id=1,
+            company_id=1,
+            date=datetime(2025, 1, 10, 13, 0, 0),
+        ),
+        GoodTransaction(
+            id=2,
+            document_id=2,
+            type_id=1,
+            amount=-1.0,
+            cost=700.0,
+            master_id=2,
+            company_id=1,
+            date=datetime(2025, 1, 10, 15, 0, 0),
+        ),
+    ])
+    await async_session.commit()
+
+    async def override_db():
+        yield async_session
+
+    app.dependency_overrides[api.get_async_db] = override_db
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url='http://test') as client:
+        r = await client.get(
+            '/dashboard/bundle',
+            params={
+                'start_date': '2025-01-01',
+                'end_date': '2025-01-31',
+                'staff_id': 1,
+            },
+        )
+    app.dependency_overrides.clear()
+
+    assert r.status_code == 200
+    data = r.json()['data']
+    assert data['summary']['revenue']['total'] == 1300.0
+    assert data['summary']['revenue']['appointments'] == 1
+    assert data['revenue_daily'] == [
+        {
+            'date': '2025-01-10',
+            'revenue': 1300.0,
+            'service_revenue': 1000.0,
+            'goods_revenue': 300.0,
+            'appointments': 1,
+        }
+    ]
+    assert [row['title'] for row in data['top_services']] == ['Cut 1']
+
+
+@pytest.mark.asyncio
 async def test_dashboard_plan_fact_uses_plan_and_fact_formulas(async_session):
     async_session.add(Group(id=1, title='G1'))
     async_session.add(Company(id=1, title='Salon', group_id=1))
@@ -453,6 +572,10 @@ async def test_dashboard_plan_fact_uses_plan_and_fact_formulas(async_session):
             '/dashboard/widget/plan_fact',
             params={'start_date': '2025-01-01', 'end_date': '2025-01-31', 'company_id': 1},
         )
+        r_selected_staff = await client.get(
+            '/dashboard/widget/plan_fact',
+            params={'start_date': '2025-01-01', 'end_date': '2025-01-31', 'staff_id': 1},
+        )
         r_partial = await client.get(
             '/dashboard/widget/plan_fact',
             params={'start_date': '2025-01-15', 'end_date': '2025-01-20'},
@@ -490,6 +613,13 @@ async def test_dashboard_plan_fact_uses_plan_and_fact_formulas(async_session):
     staff_cells = {cell['code']: cell for cell in staff_data['groups'][0]['metrics']}
     assert staff_cells['revenue']['plan'] == 7000.0
     assert staff_cells['revenue']['fact'] == 3500.0
+
+    assert r_selected_staff.status_code == 200
+    selected_staff_data = r_selected_staff.json()['data']
+    assert selected_staff_data['view_scope'] == 'staff'
+    assert selected_staff_data['branch']['title'] == 'Salon'
+    assert selected_staff_data['selected_staff']['name'] == 'Master'
+    assert [group['title'] for group in selected_staff_data['groups']] == ['Master']
 
     assert r_partial.status_code == 200
     partial_data = r_partial.json()['data']
@@ -556,6 +686,7 @@ async def test_plan_fact_excludes_fired_staff(async_session):
     async_session.add(Company(id=1, title='Salon', group_id=1))
     async_session.add(Staff(id=1, name='Active', position='Барбер', company_id=1, fired=0))
     async_session.add(Staff(id=2, name='Fired', position='Барбер', company_id=1, fired=1))
+    async_session.add(Staff(id=3, name='лист ожидания', position='Барбер', company_id=1, fired=0))
     await async_session.commit()
 
     async def override_db():
