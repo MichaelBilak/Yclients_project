@@ -49,6 +49,7 @@ async def test_dashboard_bundle_requires_api_key(async_session, monkeypatch):
         assert 'summary' in body['data']
         assert 'revenue_daily' in body['data']
         assert 'top_services' in body['data']
+        assert 'extra_services' in body['data']
         assert 'plan_fact' not in body['data']
 
     app.dependency_overrides.clear()
@@ -250,6 +251,8 @@ async def test_dashboard_top_services_merges_same_service_name_across_branches(a
         Transaction(id=3, appointment_id=1, service_id=30, service_title='Комплексное мытьё головы', cost=50.0, first_cost=50.0, amount=1, company_id=1),
         Transaction(id=4, appointment_id=2, service_id=40, service_title='Комплексное мытье головы', cost=75.0, first_cost=75.0, amount=1, company_id=2),
         Transaction(id=5, appointment_id=1, service_id=50, service_title='Стрижка', cost=80.0, first_cost=80.0, amount=1, company_id=1),
+        ServiceLabel(service_id=10, company_id=1, is_extra=True, source='google_sheet:services', updated_at=datetime(2025, 1, 1, 0, 0, 0)),
+        ServiceLabel(service_id=20, company_id=2, is_extra=True, source='google_sheet:services', updated_at=datetime(2025, 1, 1, 0, 0, 0)),
     ])
     await async_session.commit()
 
@@ -261,6 +264,10 @@ async def test_dashboard_top_services_merges_same_service_name_across_branches(a
     async with AsyncClient(transport=transport, base_url='http://test') as client:
         r = await client.get(
             '/dashboard/widget/top_services',
+            params={'start_date': '2025-01-01', 'end_date': '2025-01-31'},
+        )
+        r_extra = await client.get(
+            '/dashboard/widget/extra_services',
             params={'start_date': '2025-01-01', 'end_date': '2025-01-31'},
         )
     app.dependency_overrides.clear()
@@ -280,6 +287,15 @@ async def test_dashboard_top_services_merges_same_service_name_across_branches(a
     assert wash['revenue'] == 125.0
     assert wash['service_count'] == 2
     assert wash['branch_count'] == 2
+
+    assert r_extra.status_code == 200
+    extra_rows = r_extra.json()['data']
+    assert len(extra_rows) == 1
+    assert extra_rows[0]['title'] == 'Black Mask'
+    assert extra_rows[0]['sold'] == 3
+    assert extra_rows[0]['revenue'] == 500.0
+    assert extra_rows[0]['service_count'] == 2
+    assert extra_rows[0]['branch_count'] == 2
 
 
 @pytest.mark.asyncio
@@ -354,6 +370,7 @@ async def test_dashboard_staff_filter_excludes_waitlist_and_fired_staff(async_se
     async_session.add(Staff(id=20, name='Fired', position='Барбер', company_id=1, fired=1))
     async_session.add(Staff(id=30, name='Лист ожидания', position='Системный', company_id=1, fired=0))
     async_session.add(Staff(id=40, name='Admin', position='Администратор', company_id=2, fired=0))
+    async_session.add(Staff(id=50, name='Администратор Ривьера', position='Администратор', company_id=2, fired=0))
     await async_session.commit()
 
     async def override_db():

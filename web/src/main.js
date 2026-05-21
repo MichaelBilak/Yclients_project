@@ -12,10 +12,12 @@ const els = {
   revenueMeta: document.getElementById('revenue-meta'),
   appointmentsMeta: document.getElementById('appointments-meta'),
   servicesMeta: document.getElementById('services-meta'),
+  extraServicesMeta: document.getElementById('extra-services-meta'),
   planMeta: document.getElementById('plan-meta'),
   tableMeta: document.getElementById('table-meta'),
   planFactTable: document.getElementById('plan-fact-table'),
   servicesTable: document.getElementById('services-table'),
+  extraServicesTable: document.getElementById('extra-services-table'),
   revenueChart: document.getElementById('revenue-chart'),
   appointmentsChart: document.getElementById('appointments-chart'),
   servicesChart: document.getElementById('services-chart'),
@@ -413,6 +415,40 @@ function renderServicesTable(services) {
   `;
 }
 
+function renderExtraServicesTable(services) {
+  if (!services.length) {
+    els.extraServicesTable.innerHTML = '<div class="empty">Нет доп. услуг за выбранный период</div>';
+    return;
+  }
+
+  els.extraServicesTable.innerHTML = `
+    <table>
+      <thead>
+        <tr>
+          <th>Доп. услуга</th>
+          <th class="number">Сделано</th>
+          <th class="number">Филиалов</th>
+          <th class="number">Выручка</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${services
+          .map(
+            (item) => `
+              <tr>
+                <td>${escapeHtml(item.title || `Услуга ${item.service_id || ''}`)}</td>
+                <td class="number">${formatNumber(item.sold)}</td>
+                <td class="number">${formatNumber(item.branch_count)}</td>
+                <td class="number">${formatMoney(item.revenue)}</td>
+              </tr>
+            `,
+          )
+          .join('')}
+      </tbody>
+    </table>
+  `;
+}
+
 function renderPlanTable(groups, metrics) {
   const rowTypes = [
     ['plan', 'План'],
@@ -516,17 +552,24 @@ function renderPlanFact(planFact) {
 }
 
 function renderBundle(bundle) {
-  const { summary, revenue_daily: daily = [], top_services: services = [] } = bundle;
+  const {
+    summary,
+    revenue_daily: daily = [],
+    top_services: services = [],
+    extra_services: extraServices = [],
+  } = bundle;
   renderKpi(summary);
   renderRevenueChart(daily);
   renderAppointmentsChart(daily);
   renderServicesChart(services.slice(0, 8));
   renderServicesTable(services);
+  renderExtraServicesTable(extraServices);
 
   els.periodLabel.textContent = `${summary.period.start} .. ${summary.period.end}`;
   els.revenueMeta.textContent = `${daily.length} дней`;
   els.appointmentsMeta.textContent = `${formatNumber(summary.revenue.appointments)} записей`;
   els.servicesMeta.textContent = `${services.length} услуг`;
+  els.extraServicesMeta.textContent = `${formatNumber(summary.revenue.extra_service_count)} оказано`;
   els.tableMeta.textContent = `${formatMoney(summary.revenue.total)} всего`;
 }
 
@@ -666,6 +709,7 @@ async function loadCurrentView() {
 async function init() {
   Object.values(filterEls).forEach((filter) => defaultDates(filter));
   renderServicesTable([]);
+  renderExtraServicesTable([]);
   await loadBranches();
   await Promise.all(Object.values(filterEls).map((filter) => loadStaff(filter)));
   setActiveView(viewFromHash());

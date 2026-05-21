@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config import SYNC_API_TOKEN
 from dashboard_service import (
     fetch_branches,
+    fetch_extra_services,
     fetch_plan_fact,
     fetch_revenue_daily,
     fetch_staff,
@@ -129,6 +130,19 @@ async def dashboard_widget_top_services(
     return {'success': True, 'data': await fetch_top_services(db, start, end, company_id, limit, staff_id)}
 
 
+@router.get('/widget/extra_services')
+async def dashboard_widget_extra_services(
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+    company_id: int | None = Query(None),
+    staff_id: int | None = Query(None),
+    limit: int = Query(50, ge=1, le=100),
+    db: AsyncSession = Depends(get_async_db),
+):
+    start, end = _parse_range(start_date, end_date)
+    return {'success': True, 'data': await fetch_extra_services(db, start, end, company_id, limit, staff_id)}
+
+
 @router.get('/widget/plan_fact')
 async def dashboard_widget_plan_fact(
     start_date: date = Query(...),
@@ -158,16 +172,18 @@ async def dashboard_bundle(
     staff_id: int | None = Query(None),
     db: AsyncSession = Depends(get_async_db),
 ):
-    """Single round-trip: summary + daily revenue + top services (sequential server-side)."""
+    """Single round-trip: summary + daily revenue + service breakdowns (sequential server-side)."""
     start, end = _parse_range(start_date, end_date)
     summary = await fetch_summary(db, start, end, company_id, staff_id)
     daily = await fetch_revenue_daily(db, start, end, company_id, staff_id)
     services = await fetch_top_services(db, start, end, company_id, 10, staff_id)
+    extra_services = await fetch_extra_services(db, start, end, company_id, 50, staff_id)
     return {
         'success': True,
         'data': {
             'summary': summary,
             'revenue_daily': daily,
             'top_services': services,
+            'extra_services': extra_services,
         },
     }

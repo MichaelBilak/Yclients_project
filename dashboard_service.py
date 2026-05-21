@@ -520,6 +520,53 @@ async def fetch_top_services(
     return out
 
 
+async def fetch_extra_services(
+    db: AsyncSession,
+    start: date,
+    end: date,
+    company_id: Optional[int] = None,
+    limit: int = 50,
+    staff_id: Optional[int] = None,
+) -> list[dict[str, Any]]:
+    rev = func.coalesce(func.sum(Transaction.cost * Transaction.amount), 0.0)
+    title_expr = func.trim(func.coalesce(func.nullif(Transaction.service_title, ''), Service.title, ''))
+    normalized_title = func.lower(func.replace(title_expr, 'ё', 'е'))
+    group_key = func.coalesce(func.nullif(normalized_title, ''), cast(Transaction.service_id, String))
+    stmt = (
+        select(
+            func.min(Transaction.service_id).label('service_id'),
+            func.min(title_expr).label('service_title'),
+            func.coalesce(func.sum(Transaction.amount), 0).label('sold'),
+            rev.label('revenue'),
+            func.count(func.distinct(Transaction.service_id)).label('service_count'),
+            func.count(func.distinct(Appointment.company_id)).label('branch_count'),
+        )
+        .select_from(Transaction)
+        .join(Appointment, Appointment.id == Transaction.appointment_id)
+        .join(ServiceLabel, ServiceLabel.service_id == Transaction.service_id)
+        .outerjoin(Service, Service.id == Transaction.service_id)
+        .where(
+            _appt_revenue_filters(start, end, company_id, staff_id),
+            ServiceLabel.is_extra.is_(True),
+        )
+        .group_by(group_key)
+        .order_by(func.coalesce(func.sum(Transaction.amount), 0).desc(), rev.desc())
+        .limit(limit)
+    )
+    rows = (await db.execute(stmt)).all()
+    return [
+        {
+            'service_id': r.service_id,
+            'title': r.service_title or '',
+            'sold': int(r.sold or 0),
+            'revenue': float(r.revenue or 0),
+            'service_count': int(r.service_count or 0),
+            'branch_count': int(r.branch_count or 0),
+        }
+        for r in rows
+    ]
+
+
 async def _service_group_counts(
     db: AsyncSession,
     start: date,
@@ -836,7 +883,10 @@ async def _fetch_company_staff(
         stmt = stmt.where(Staff.id == staff_id)
     return [
         row for row in (await db.execute(stmt)).all()
-        if not _is_waitlist_staff_name(row.name)
+        if (
+            not _is_waitlist_staff_name(row.name)
+            and not _is_admin_placeholder_staff_name(row.name)
+        )
     ]
 
 
@@ -875,7 +925,10 @@ async def fetch_staff(
             'company_title': row.company_title,
         }
         for row in rows
-        if not _is_waitlist_staff_name(row.name)
+        if (
+            not _is_waitlist_staff_name(row.name)
+            and not _is_admin_placeholder_staff_name(row.name)
+        )
     ]
 
 
