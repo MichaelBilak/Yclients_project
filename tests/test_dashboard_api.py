@@ -13,6 +13,7 @@ from models import (
     Appointment,
     Client,
     Company,
+    FinancialTransaction,
     GoodTransaction,
     Group,
     PlanMetric,
@@ -89,8 +90,10 @@ async def test_dashboard_summary_revenue_and_change(async_session):
     ])
     await async_session.flush()
     async_session.add_all([
-        Transaction(id=1, appointment_id=1, service_id=10, service_title='Cut', cost=1000.0, first_cost=1000.0, amount=1, company_id=1),
-        Transaction(id=2, appointment_id=2, service_id=10, service_title='Cut', cost=500.0, first_cost=500.0, amount=1, company_id=1),
+        Transaction(id=1, appointment_id=1, service_id=10, service_title='Cut', cost=1200.0, first_cost=1500.0, amount=1, company_id=1),
+        Transaction(id=2, appointment_id=2, service_id=10, service_title='Cut', cost=700.0, first_cost=900.0, amount=1, company_id=1),
+        FinancialTransaction(id=1, date=datetime(2025, 1, 10, 12, 0, 0), amount=1000.0, record_id=1, visit_id=1, sold_item_id=10, sold_item_type='service', company_id=1),
+        FinancialTransaction(id=2, date=datetime(2024, 12, 20, 12, 0, 0), amount=500.0, record_id=2, visit_id=2, sold_item_id=10, sold_item_type='service', company_id=1),
     ])
     await async_session.commit()
 
@@ -166,6 +169,11 @@ async def test_dashboard_summary_split_revenue_and_average_checks(async_session)
         Transaction(id=2, appointment_id=1, service_id=11, service_title='Воск', cost=500.0, first_cost=500.0, amount=1, company_id=1),
         Transaction(id=3, appointment_id=2, service_id=10, service_title='Стрижка', cost=1500.0, first_cost=1500.0, amount=1, company_id=1),
         Transaction(id=4, appointment_id=1, service_id=11, service_title='Воск', cost=700.0, first_cost=700.0, amount=1, company_id=1),
+        FinancialTransaction(id=1, date=datetime(2025, 1, 10, 12, 0, 0), amount=1000.0, record_id=1, visit_id=1, sold_item_id=10, sold_item_type='service', master_id=1, company_id=1),
+        FinancialTransaction(id=2, date=datetime(2025, 1, 10, 12, 0, 0), amount=500.0, record_id=1, visit_id=1, sold_item_id=11, sold_item_type='service', master_id=1, company_id=1),
+        FinancialTransaction(id=3, date=datetime(2025, 1, 11, 12, 0, 0), amount=1500.0, record_id=2, visit_id=2, sold_item_id=10, sold_item_type='service', master_id=1, company_id=1),
+        FinancialTransaction(id=4, date=datetime(2025, 1, 10, 12, 0, 0), amount=700.0, record_id=1, visit_id=1, sold_item_id=11, sold_item_type='service', master_id=1, company_id=1),
+        FinancialTransaction(id=5, date=datetime(2025, 1, 11, 12, 0, 0), amount=600.0, record_id=2, visit_id=2, sold_item_id=1, sold_item_type='goods_transaction', master_id=1, company_id=1),
         GoodTransaction(
             id=1,
             document_id=1,
@@ -270,6 +278,11 @@ async def test_dashboard_top_services_merges_same_service_name_across_branches(a
         Transaction(id=3, appointment_id=1, service_id=30, service_title='Комплексное мытьё головы', cost=50.0, first_cost=50.0, amount=1, company_id=1),
         Transaction(id=4, appointment_id=2, service_id=40, service_title='Комплексное мытье головы', cost=75.0, first_cost=75.0, amount=1, company_id=2),
         Transaction(id=5, appointment_id=1, service_id=50, service_title='Стрижка', cost=80.0, first_cost=80.0, amount=1, company_id=1),
+        FinancialTransaction(id=1, date=datetime(2025, 1, 10, 12, 0, 0), amount=100.0, record_id=1, visit_id=1, sold_item_id=10, sold_item_type='service', master_id=1, company_id=1),
+        FinancialTransaction(id=2, date=datetime(2025, 1, 11, 12, 0, 0), amount=400.0, record_id=2, visit_id=2, sold_item_id=20, sold_item_type='service', master_id=2, company_id=2),
+        FinancialTransaction(id=3, date=datetime(2025, 1, 10, 12, 0, 0), amount=50.0, record_id=1, visit_id=1, sold_item_id=30, sold_item_type='service', master_id=1, company_id=1),
+        FinancialTransaction(id=4, date=datetime(2025, 1, 11, 12, 0, 0), amount=75.0, record_id=2, visit_id=2, sold_item_id=40, sold_item_type='service', master_id=2, company_id=2),
+        FinancialTransaction(id=5, date=datetime(2025, 1, 10, 12, 0, 0), amount=80.0, record_id=1, visit_id=1, sold_item_id=50, sold_item_type='service', master_id=1, company_id=1),
         ServiceLabel(service_id=10, company_id=1, is_extra=True, source='google_sheet:services', updated_at=datetime(2025, 1, 1, 0, 0, 0)),
         ServiceLabel(service_id=20, company_id=2, is_extra=True, source='google_sheet:services', updated_at=datetime(2025, 1, 1, 0, 0, 0)),
     ])
@@ -445,6 +458,10 @@ async def test_dashboard_bundle_filters_by_staff(async_session):
     async_session.add_all([
         Transaction(id=1, appointment_id=1, service_id=10, service_title='Cut 1', cost=1000.0, first_cost=1000.0, amount=1, company_id=1),
         Transaction(id=2, appointment_id=2, service_id=20, service_title='Cut 2', cost=2000.0, first_cost=2000.0, amount=1, company_id=1),
+        FinancialTransaction(id=1, date=datetime(2025, 1, 10, 12, 0, 0), amount=1000.0, record_id=1, visit_id=1, sold_item_id=10, sold_item_type='service', master_id=1, company_id=1),
+        FinancialTransaction(id=2, date=datetime(2025, 1, 10, 14, 0, 0), amount=2000.0, record_id=2, visit_id=2, sold_item_id=20, sold_item_type='service', master_id=2, company_id=1),
+        FinancialTransaction(id=3, date=datetime(2025, 1, 10, 13, 0, 0), amount=300.0, record_id=1, visit_id=1, sold_item_id=1, sold_item_type='goods_transaction', master_id=1, company_id=1),
+        FinancialTransaction(id=4, date=datetime(2025, 1, 10, 15, 0, 0), amount=700.0, record_id=2, visit_id=2, sold_item_id=2, sold_item_type='goods_transaction', master_id=2, company_id=1),
         GoodTransaction(
             id=1,
             document_id=1,
@@ -531,6 +548,17 @@ async def test_dashboard_plan_fact_uses_plan_and_fact_formulas(async_session):
             seance_length=3600,
             attendance=0,
         ),
+        Appointment(
+            id=3,
+            company_id=1,
+            staff_id=1,
+            client_id=1,
+            date=date(2025, 1, 12),
+            datetime=datetime(2025, 1, 12, 12, 0, 0),
+            create_date=datetime(2025, 1, 11, 12, 0, 0),
+            seance_length=3600,
+            attendance=1,
+        ),
     ])
     await async_session.flush()
 
@@ -553,6 +581,60 @@ async def test_dashboard_plan_fact_uses_plan_and_fact_formulas(async_session):
             cost=500.0,
             first_cost=500.0,
             amount=2,
+            company_id=1,
+        ),
+        Transaction(
+            id=3,
+            appointment_id=3,
+            service_id=12,
+            service_title='стрижка',
+            cost=500.0,
+            first_cost=500.0,
+            amount=1,
+            company_id=1,
+        ),
+        FinancialTransaction(
+            id=1,
+            date=datetime(2025, 1, 10, 12, 0, 0),
+            amount=1000.0,
+            record_id=1,
+            visit_id=1,
+            sold_item_id=10,
+            sold_item_type='service',
+            master_id=1,
+            company_id=1,
+        ),
+        FinancialTransaction(
+            id=2,
+            date=datetime(2025, 1, 10, 12, 0, 0),
+            amount=1000.0,
+            record_id=1,
+            visit_id=1,
+            sold_item_id=11,
+            sold_item_type='service',
+            master_id=1,
+            company_id=1,
+        ),
+        FinancialTransaction(
+            id=3,
+            date=datetime(2025, 1, 12, 12, 0, 0),
+            amount=500.0,
+            record_id=3,
+            visit_id=3,
+            sold_item_id=12,
+            sold_item_type='service',
+            master_id=1,
+            company_id=1,
+        ),
+        FinancialTransaction(
+            id=4,
+            date=datetime(2025, 1, 11, 12, 0, 0),
+            amount=1500.0,
+            record_id=1,
+            visit_id=1,
+            sold_item_id=1,
+            sold_item_type='goods_transaction',
+            master_id=1,
             company_id=1,
         ),
         GoodTransaction(
@@ -623,6 +705,10 @@ async def test_dashboard_plan_fact_uses_plan_and_fact_formulas(async_session):
             '/dashboard/widget/plan_fact',
             params={'start_date': '2025-01-15', 'end_date': '2025-01-20'},
         )
+        r_summary = await client.get(
+            '/dashboard/widget/summary',
+            params={'start_date': '2025-01-01', 'end_date': '2025-01-31'},
+        )
     app.dependency_overrides.clear()
 
     assert r.status_code == 200
@@ -634,18 +720,20 @@ async def test_dashboard_plan_fact_uses_plan_and_fact_formulas(async_session):
     assert branch_group['title'] == 'Salon'
 
     cells = {cell['code']: cell for cell in branch_group['metrics']}
-    assert cells['revenue']['fact'] == 3500.0
-    assert cells['revenue']['completion_pct'] == 50.0
-    assert cells['avg_check_total']['fact'] == 3500.0
-    assert cells['clients']['fact'] == 1.0
+    assert cells['revenue']['fact'] == 4000.0
+    assert cells['revenue']['completion_pct'] == pytest.approx(57.14, abs=0.01)
+    assert cells['avg_check_total']['fact'] == 2000.0
+    assert cells['clients']['fact'] == 2.0
     assert cells['wax_qty']['fact'] == 1.0
     assert cells['camouflage_qty']['fact'] == 2.0
     assert cells['cosmo_qty']['fact'] == 3.0
     assert cells['cosmo_sum']['fact'] == 1500.0
     assert 'reviews_qty' not in cells
     assert cells['opz_qty']['fact'] == 1.0
-    assert cells['opz_pct']['fact'] == 100.0
-    assert cells['extra_services_pct']['fact'] == 300.0
+    assert cells['opz_pct']['fact'] == 50.0
+    assert cells['extra_services_pct']['fact'] == 150.0
+    summary_avg = r_summary.json()['data']['average_check']['total']
+    assert cells['avg_check_total']['fact'] == summary_avg
 
     assert r_staff.status_code == 200
     staff_data = r_staff.json()['data']
@@ -655,7 +743,7 @@ async def test_dashboard_plan_fact_uses_plan_and_fact_formulas(async_session):
     assert staff_data['groups'][0]['category'] == 'barber'
     staff_cells = {cell['code']: cell for cell in staff_data['groups'][0]['metrics']}
     assert staff_cells['revenue']['plan'] == 7000.0
-    assert staff_cells['revenue']['fact'] == 3500.0
+    assert staff_cells['revenue']['fact'] == 4000.0
 
     assert r_selected_staff.status_code == 200
     selected_staff_data = r_selected_staff.json()['data']
@@ -681,6 +769,7 @@ async def test_admin_opz_attributes_to_creator(async_session):
     async_session.add(Staff(id=1, name='Barber', position='Барбер', company_id=1))
     async_session.add(Staff(id=2, name='Admin', position='Администратор', company_id=1, user_id=500))
     async_session.add(Client(id=1, name='C', company_id=1, visits_count=1, last_visit_date=date(2025, 1, 10)))
+    now = datetime(2025, 1, 1)
     await async_session.flush()
 
     async_session.add_all([
@@ -697,6 +786,26 @@ async def test_admin_opz_attributes_to_creator(async_session):
             datetime=datetime(2025, 2, 10, 12, 0, 0),
             create_date=datetime(2025, 1, 10, 18, 0, 0),
             seance_length=3600, attendance=0, created_user_id=500,
+        ),
+        PlanMetric(
+            period_start=date(2025, 1, 1),
+            period_end=date(2025, 1, 31),
+            company_id=1,
+            staff_id=1,
+            staff_category='barber',
+            metric_code='opz_qty',
+            value=1.0,
+            updated_at=now,
+        ),
+        PlanMetric(
+            period_start=date(2025, 1, 1),
+            period_end=date(2025, 1, 31),
+            company_id=1,
+            staff_id=2,
+            staff_category='administrator',
+            metric_code='opz_qty',
+            value=1.0,
+            updated_at=now,
         ),
     ])
     await async_session.commit()
@@ -730,6 +839,31 @@ async def test_plan_fact_excludes_fired_staff(async_session):
     async_session.add(Staff(id=1, name='Active', position='Барбер', company_id=1, fired=0))
     async_session.add(Staff(id=2, name='Fired', position='Барбер', company_id=1, fired=1))
     async_session.add(Staff(id=3, name='лист ожидания', position='Барбер', company_id=1, fired=0))
+    async_session.add(Staff(id=4, name='No Plan', position='Барбер', company_id=1, fired=0))
+    async_session.add(Staff(id=5, name='Zero Plan', position='Барбер', company_id=1, fired=0))
+    now = datetime(2025, 1, 1)
+    async_session.add_all([
+        PlanMetric(
+            period_start=date(2025, 1, 1),
+            period_end=date(2025, 1, 31),
+            company_id=1,
+            staff_id=1,
+            staff_category='barber',
+            metric_code='revenue',
+            value=1000.0,
+            updated_at=now,
+        ),
+        PlanMetric(
+            period_start=date(2025, 1, 1),
+            period_end=date(2025, 1, 31),
+            company_id=1,
+            staff_id=5,
+            staff_category='barber',
+            metric_code='revenue',
+            value=0.0,
+            updated_at=now,
+        ),
+    ])
     await async_session.commit()
 
     async def override_db():

@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from models import (
     Appointment,
     Company,
+    FinancialTransaction,
     GoodTransaction,
     PlanMetric,
     PortalBranch,
@@ -31,6 +32,8 @@ from plan_config import (
 )
 
 GOODS_SALE_TYPE_ID = 1
+SERVICE_SOLD_ITEM_TYPE = 'service'
+GOODS_SOLD_ITEM_TYPE = 'goods_transaction'
 WAITLIST_STAFF_NAME = 'лист ожидания'
 ADMIN_PLACEHOLDER_STAFF_PREFIX = 'администратор'
 
@@ -135,15 +138,52 @@ def _goods_revenue_filters(
     return and_(*parts)
 
 
-async def _goods_revenue_total(
+def _service_paid_filters(
+    start: date,
+    end: date,
+    company_id: Optional[int],
+    staff_id: Optional[int] = None,
+):
+    parts = [
+        FinancialTransaction.sold_item_type == SERVICE_SOLD_ITEM_TYPE,
+        Appointment.attendance > 0,
+        Appointment.date >= start,
+        Appointment.date <= end,
+    ]
+    if company_id is not None:
+        parts.append(Appointment.company_id == company_id)
+    if staff_id is not None:
+        parts.append(Appointment.staff_id == staff_id)
+    return and_(*parts)
+
+
+def _goods_paid_filters(
+    start: date,
+    end: date,
+    company_id: Optional[int],
+    staff_id: Optional[int] = None,
+):
+    parts = [
+        FinancialTransaction.sold_item_type == GOODS_SOLD_ITEM_TYPE,
+        func.date(FinancialTransaction.date) >= start,
+        func.date(FinancialTransaction.date) <= end,
+    ]
+    if company_id is not None:
+        parts.append(FinancialTransaction.company_id == company_id)
+    if staff_id is not None:
+        parts.append(FinancialTransaction.master_id == staff_id)
+    return and_(*parts)
+
+
+async def _goods_paid_revenue_total(
     db: AsyncSession,
     dr: DateRange,
     company_id: Optional[int],
     staff_id: Optional[int] = None,
 ) -> float:
     stmt = (
-        select(func.coalesce(func.sum(GoodTransaction.cost), 0.0).label('revenue'))
-        .where(_goods_revenue_filters(dr.start, dr.end, company_id, staff_id))
+        select(func.coalesce(func.sum(FinancialTransaction.amount), 0.0).label('revenue'))
+        .where(_goods_paid_filters(dr.start, dr.end, company_id, staff_id))
     )
     row = (await db.execute(stmt)).one()
     return float(row.revenue or 0)
@@ -185,6 +225,11 @@ def _service_qty_sum(title_expr, parts: tuple[str, ...]):
         ),
         0,
     )
+
+
+def _service_group_key(title_expr, service_id_expr):
+    normalized_title = func.lower(func.replace(title_expr, 'ё', 'е'))
+    return func.coalesce(func.nullif(normalized_title, ''), cast(service_id_expr, String))
 
 
 def _derive_metric_values(
@@ -259,16 +304,6 @@ async def _revenue_block(
     staff_id: Optional[int] = None,
 ) -> dict[str, Any]:
     cond = _appt_revenue_filters(dr.start, dr.end, company_id, staff_id)
-    rev = func.coalesce(func.sum(Transaction.cost * Transaction.amount), 0.0)
-    extra_rev = func.coalesce(
-        func.sum(
-            case(
-                (ServiceLabel.is_extra.is_(True), Transaction.cost * Transaction.amount),
-                else_=0.0,
-            )
-        ),
-        0.0,
-    )
     extra_appt = case(
         (ServiceLabel.is_extra.is_(True), Appointment.id),
         else_=None,
@@ -287,10 +322,8 @@ async def _revenue_block(
         ),
         0,
     )
-    stmt = (
+    counts_stmt = (
         select(
-            rev.label('revenue'),
-            extra_rev.label('extra_service_revenue'),
             service_count.label('service_count'),
             extra_service_count.label('extra_service_count'),
             func.count(func.distinct(Appointment.id)).label('appointments'),
@@ -303,10 +336,29 @@ async def _revenue_block(
         .outerjoin(ServiceLabel, ServiceLabel.service_id == Transaction.service_id)
         .where(cond)
     )
-    row = (await db.execute(stmt)).one()
-    service_revenue = float(row.revenue or 0)
-    extra_service_revenue = float(row.extra_service_revenue or 0)
-    goods_revenue = await _goods_revenue_total(db, dr, company_id, staff_id)
+    paid_stmt = (
+        select(
+            func.coalesce(func.sum(FinancialTransaction.amount), 0.0).label('revenue'),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (ServiceLabel.is_extra.is_(True), FinancialTransaction.amount),
+                        else_=0.0,
+                    )
+                ),
+                0.0,
+            ).label('extra_service_revenue'),
+        )
+        .select_from(FinancialTransaction)
+        .join(Appointment, Appointment.id == FinancialTransaction.record_id)
+        .outerjoin(ServiceLabel, ServiceLabel.service_id == FinancialTransaction.sold_item_id)
+        .where(_service_paid_filters(dr.start, dr.end, company_id, staff_id))
+    )
+    row = (await db.execute(counts_stmt)).one()
+    paid_row = (await db.execute(paid_stmt)).one()
+    service_revenue = float(paid_row.revenue or 0)
+    extra_service_revenue = float(paid_row.extra_service_revenue or 0)
+    goods_revenue = await _goods_paid_revenue_total(db, dr, company_id, staff_id)
     goods_count = await _goods_sold_count(db, dr, company_id, staff_id)
     return {
         'revenue': service_revenue + goods_revenue,
@@ -483,32 +535,40 @@ async def fetch_revenue_daily(
     company_id: Optional[int] = None,
     staff_id: Optional[int] = None,
 ) -> list[dict[str, Any]]:
-    rev = func.coalesce(func.sum(Transaction.cost * Transaction.amount), 0.0)
     svc_stmt = (
         select(
             Appointment.date.label('d'),
-            rev.label('revenue'),
-            func.count(func.distinct(Appointment.id)).label('appointments'),
+            func.coalesce(func.sum(FinancialTransaction.amount), 0.0).label('revenue'),
         )
         .select_from(Appointment)
-        .outerjoin(Transaction, Transaction.appointment_id == Appointment.id)
+        .join(FinancialTransaction, FinancialTransaction.record_id == Appointment.id)
         .where(
-            _appt_revenue_filters(start, end, company_id, staff_id),
+            _service_paid_filters(start, end, company_id, staff_id),
         )
         .group_by(Appointment.date)
     )
+    appt_stmt = (
+        select(
+            Appointment.date.label('d'),
+            func.count(func.distinct(Appointment.id)).label('appointments'),
+        )
+        .select_from(Appointment)
+        .where(_appt_revenue_filters(start, end, company_id, staff_id))
+        .group_by(Appointment.date)
+    )
 
-    goods_day = func.date(GoodTransaction.date)
+    goods_day = func.date(FinancialTransaction.date)
     goods_stmt = (
         select(
             goods_day.label('d'),
-            func.coalesce(func.sum(GoodTransaction.cost), 0.0).label('revenue'),
+            func.coalesce(func.sum(FinancialTransaction.amount), 0.0).label('revenue'),
         )
-        .where(_goods_revenue_filters(start, end, company_id, staff_id))
+        .where(_goods_paid_filters(start, end, company_id, staff_id))
         .group_by(goods_day)
     )
 
     svc_rows = (await db.execute(svc_stmt)).all()
+    appt_rows = (await db.execute(appt_stmt)).all()
     goods_rows = (await db.execute(goods_stmt)).all()
 
     by_date: dict[date, dict[str, float | int]] = {}
@@ -516,6 +576,9 @@ async def fetch_revenue_daily(
         day = _coerce_date(r.d)
         by_date.setdefault(day, {'service_revenue': 0.0, 'goods_revenue': 0.0, 'appointments': 0})
         by_date[day]['service_revenue'] = float(r.revenue or 0)
+    for r in appt_rows:
+        day = _coerce_date(r.d)
+        by_date.setdefault(day, {'service_revenue': 0.0, 'goods_revenue': 0.0, 'appointments': 0})
         by_date[day]['appointments'] = int(r.appointments or 0)
     for r in goods_rows:
         day = _coerce_date(r.d)
@@ -542,16 +605,14 @@ async def fetch_top_services(
     limit: int = 10,
     staff_id: Optional[int] = None,
 ) -> list[dict[str, Any]]:
-    rev = func.coalesce(func.sum(Transaction.cost * Transaction.amount), 0.0)
     title_expr = func.trim(func.coalesce(func.nullif(Transaction.service_title, ''), Service.title, ''))
-    normalized_title = func.lower(func.replace(title_expr, 'ё', 'е'))
-    group_key = func.coalesce(func.nullif(normalized_title, ''), cast(Transaction.service_id, String))
-    stmt = (
+    group_key = _service_group_key(title_expr, Transaction.service_id)
+    count_stmt = (
         select(
+            group_key.label('group_key'),
             func.min(Transaction.service_id).label('service_id'),
             func.min(title_expr).label('service_title'),
             func.sum(Transaction.amount).label('sold'),
-            rev.label('revenue'),
             func.count(func.distinct(Transaction.service_id)).label('service_count'),
             func.count(func.distinct(Appointment.company_id)).label('branch_count'),
         )
@@ -562,19 +623,69 @@ async def fetch_top_services(
             _appt_revenue_filters(start, end, company_id, staff_id),
         )
         .group_by(group_key)
-        .order_by(rev.desc())
+    )
+    tx_titles = (
+        select(
+            Transaction.appointment_id.label('record_id'),
+            Transaction.service_id.label('service_id'),
+            func.min(func.nullif(Transaction.service_title, '')).label('service_title'),
+        )
+        .group_by(Transaction.appointment_id, Transaction.service_id)
+        .subquery()
+    )
+    paid_title_expr = func.trim(
+        func.coalesce(
+            tx_titles.c.service_title,
+            func.nullif(Service.title, ''),
+            cast(FinancialTransaction.sold_item_id, String),
+        )
+    )
+    paid_group_key = _service_group_key(paid_title_expr, FinancialTransaction.sold_item_id)
+    paid_revenue = func.coalesce(func.sum(FinancialTransaction.amount), 0.0)
+    paid_stmt = (
+        select(
+            paid_group_key.label('group_key'),
+            func.min(FinancialTransaction.sold_item_id).label('service_id'),
+            func.min(paid_title_expr).label('service_title'),
+            paid_revenue.label('revenue'),
+            func.count(func.distinct(FinancialTransaction.sold_item_id)).label('service_count'),
+            func.count(func.distinct(Appointment.company_id)).label('branch_count'),
+        )
+        .select_from(FinancialTransaction)
+        .join(Appointment, Appointment.id == FinancialTransaction.record_id)
+        .outerjoin(
+            tx_titles,
+            and_(
+                tx_titles.c.record_id == FinancialTransaction.record_id,
+                tx_titles.c.service_id == FinancialTransaction.sold_item_id,
+            ),
+        )
+        .outerjoin(Service, Service.id == FinancialTransaction.sold_item_id)
+        .where(_service_paid_filters(start, end, company_id, staff_id))
+        .group_by(paid_group_key)
+        .order_by(paid_revenue.desc())
         .limit(limit)
     )
-    rows = (await db.execute(stmt)).all()
+    count_rows = (await db.execute(count_stmt)).all()
+    paid_rows = (await db.execute(paid_stmt)).all()
+    counts_by_key = {str(r.group_key): r for r in count_rows}
     out = []
-    for r in rows:
+    for r in paid_rows:
+        key = str(r.group_key)
+        counts = counts_by_key.get(key)
         out.append({
-            'service_id': r.service_id,
-            'title': r.service_title or '',
-            'sold': int(r.sold or 0),
+            'service_id': counts.service_id if counts is not None else r.service_id,
+            'title': (counts.service_title if counts is not None else r.service_title) or '',
+            'sold': int((counts.sold if counts is not None else 0) or 0),
             'revenue': float(r.revenue or 0),
-            'service_count': int(r.service_count or 0),
-            'branch_count': int(r.branch_count or 0),
+            'service_count': max(
+                int((counts.service_count if counts is not None else 0) or 0),
+                int(r.service_count or 0),
+            ),
+            'branch_count': max(
+                int((counts.branch_count if counts is not None else 0) or 0),
+                int(r.branch_count or 0),
+            ),
         })
     return out
 
@@ -587,16 +698,14 @@ async def fetch_extra_services(
     limit: int = 50,
     staff_id: Optional[int] = None,
 ) -> list[dict[str, Any]]:
-    rev = func.coalesce(func.sum(Transaction.cost * Transaction.amount), 0.0)
     title_expr = func.trim(func.coalesce(func.nullif(Transaction.service_title, ''), Service.title, ''))
-    normalized_title = func.lower(func.replace(title_expr, 'ё', 'е'))
-    group_key = func.coalesce(func.nullif(normalized_title, ''), cast(Transaction.service_id, String))
-    stmt = (
+    group_key = _service_group_key(title_expr, Transaction.service_id)
+    count_stmt = (
         select(
+            group_key.label('group_key'),
             func.min(Transaction.service_id).label('service_id'),
             func.min(title_expr).label('service_title'),
             func.coalesce(func.sum(Transaction.amount), 0).label('sold'),
-            rev.label('revenue'),
             func.count(func.distinct(Transaction.service_id)).label('service_count'),
             func.count(func.distinct(Appointment.company_id)).label('branch_count'),
         )
@@ -609,21 +718,61 @@ async def fetch_extra_services(
             ServiceLabel.is_extra.is_(True),
         )
         .group_by(group_key)
-        .order_by(func.coalesce(func.sum(Transaction.amount), 0).desc(), rev.desc())
-        .limit(limit)
     )
-    rows = (await db.execute(stmt)).all()
-    return [
+    tx_titles = (
+        select(
+            Transaction.appointment_id.label('record_id'),
+            Transaction.service_id.label('service_id'),
+            func.min(func.nullif(Transaction.service_title, '')).label('service_title'),
+        )
+        .group_by(Transaction.appointment_id, Transaction.service_id)
+        .subquery()
+    )
+    paid_title_expr = func.trim(
+        func.coalesce(
+            tx_titles.c.service_title,
+            func.nullif(Service.title, ''),
+            cast(FinancialTransaction.sold_item_id, String),
+        )
+    )
+    paid_group_key = _service_group_key(paid_title_expr, FinancialTransaction.sold_item_id)
+    paid_stmt = (
+        select(
+            paid_group_key.label('group_key'),
+            func.coalesce(func.sum(FinancialTransaction.amount), 0.0).label('revenue'),
+        )
+        .select_from(FinancialTransaction)
+        .join(Appointment, Appointment.id == FinancialTransaction.record_id)
+        .outerjoin(
+            tx_titles,
+            and_(
+                tx_titles.c.record_id == FinancialTransaction.record_id,
+                tx_titles.c.service_id == FinancialTransaction.sold_item_id,
+            ),
+        )
+        .join(ServiceLabel, ServiceLabel.service_id == FinancialTransaction.sold_item_id)
+        .outerjoin(Service, Service.id == FinancialTransaction.sold_item_id)
+        .where(
+            _service_paid_filters(start, end, company_id, staff_id),
+            ServiceLabel.is_extra.is_(True),
+        )
+        .group_by(paid_group_key)
+    )
+    count_rows = (await db.execute(count_stmt)).all()
+    paid_by_key = {str(r.group_key): float(r.revenue or 0) for r in (await db.execute(paid_stmt)).all()}
+    rows = [
         {
             'service_id': r.service_id,
             'title': r.service_title or '',
             'sold': int(r.sold or 0),
-            'revenue': float(r.revenue or 0),
+            'revenue': paid_by_key.get(str(r.group_key), 0.0),
             'service_count': int(r.service_count or 0),
             'branch_count': int(r.branch_count or 0),
         }
-        for r in rows
+        for r in count_rows
     ]
+    rows.sort(key=lambda item: (item['sold'], item['revenue']), reverse=True)
+    return rows[:limit]
 
 
 async def _service_group_counts(
@@ -664,17 +813,17 @@ async def _goods_sales_metrics(
 ) -> dict[str, float]:
     # YClients stores goods sales as negative stock movements.
     sold_qty = func.sum(-func.coalesce(GoodTransaction.amount, 0.0))
-    stmt = (
+    qty_stmt = (
         select(
             func.coalesce(sold_qty, 0.0).label('qty'),
-            func.coalesce(func.sum(GoodTransaction.cost), 0.0).label('revenue'),
         )
         .where(_goods_revenue_filters(start, end, company_id, staff_id))
     )
-    row = (await db.execute(stmt)).one()
+    row = (await db.execute(qty_stmt)).one()
+    revenue = await _goods_paid_revenue_total(db, DateRange(start, end), company_id, staff_id)
     return {
         'cosmo_qty': float(row.qty or 0),
-        'cosmo_sum': float(row.revenue or 0),
+        'cosmo_sum': revenue,
     }
 
 
@@ -769,7 +918,7 @@ async def _fact_metric_components(
     opz_staff_id = None if created_user_id is not None else staff_id
     values: dict[str, float] = {
         'revenue': float(revenue['revenue'] or 0),
-        'clients': float(revenue['unique_clients'] or 0),
+        'clients': float(revenue['appointments'] or 0),
         'opz_qty': await _opz_count(
             db, start, end, company_id,
             staff_id=opz_staff_id,
@@ -909,6 +1058,10 @@ def _metric_cells(
     return cells
 
 
+def _has_nonzero_plan(plan_values: dict[str, float]) -> bool:
+    return any(abs(float(value or 0.0)) > 1e-9 for value in plan_values.values())
+
+
 def _metric_sets_payload() -> dict[str, list[dict[str, str]]]:
     return {
         'branch': list(PLAN_FACT_METRICS),
@@ -1041,6 +1194,11 @@ async def fetch_plan_fact(
             branch_id,
             staff_ids,
         )
+        staff_rows = [
+            staff for staff in staff_rows
+            if _has_nonzero_plan(plans_by_staff.get(int(staff.id), {}))
+        ]
+        staff_ids = [int(row.id) for row in staff_rows]
         categories_by_staff_id: dict[int, str] = {}
         for staff in staff_rows:
             sid = int(staff.id)
