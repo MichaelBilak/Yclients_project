@@ -5,6 +5,7 @@ const apiKey = import.meta.env.VITE_API_KEY || '';
 
 const els = {
   kpi: document.getElementById('kpi'),
+  visitMetrics: document.getElementById('visit-metrics'),
   error: document.getElementById('error'),
   apiState: document.getElementById('api-state'),
   syncState: document.getElementById('sync-state'),
@@ -88,6 +89,10 @@ function formatMoney(value) {
 
 function formatNumber(value) {
   return Number(value || 0).toLocaleString('ru-RU');
+}
+
+function formatDecimal(value) {
+  return Number(value || 0).toLocaleString('ru-RU', { maximumFractionDigits: 2 });
 }
 
 function formatPct(value) {
@@ -190,6 +195,20 @@ function formatInputDate(date) {
   return `${year}-${month}-${day}`;
 }
 
+function renderCards(target, cards) {
+  target.innerHTML = cards
+    .map(
+      (card) => `
+        <article class="card">
+          <div class="label">${escapeHtml(card.label)}</div>
+          <div class="value">${escapeHtml(card.value)}</div>
+          ${card.delta ? `<div class="delta ${deltaClass(card.deltaValue)}">${escapeHtml(card.delta)}</div>` : ''}
+        </article>
+      `,
+    )
+    .join('');
+}
+
 function renderKpi(summary) {
   const revenue = summary.revenue || {};
   const averageCheck = summary.average_check || {};
@@ -268,17 +287,39 @@ function renderKpi(summary) {
     },
   ];
 
-  els.kpi.innerHTML = cards
-    .map(
-      (card) => `
-        <article class="card">
-          <div class="label">${escapeHtml(card.label)}</div>
-          <div class="value">${escapeHtml(card.value)}</div>
-          <div class="delta ${deltaClass(card.deltaValue)}">${escapeHtml(card.delta)}</div>
-        </article>
-      `,
-    )
-    .join('');
+  renderCards(els.kpi, cards);
+}
+
+function renderVisitMetrics(summary) {
+  const visitMetrics = summary.visit_metrics || {};
+  const cards = [
+    {
+      label: 'Доп. услуги от посещений',
+      value: formatMetricValue(visitMetrics.extra_services_per_appointment_pct, 'percent'),
+      delta: formatPct(visitMetrics.extra_services_per_appointment_pct_change_pct),
+      deltaValue: visitMetrics.extra_services_per_appointment_pct_change_pct,
+    },
+    {
+      label: 'Уникальные клиенты',
+      value: formatNumber(visitMetrics.unique_clients),
+      delta: formatPct(visitMetrics.unique_clients_change_pct),
+      deltaValue: visitMetrics.unique_clients_change_pct,
+    },
+    {
+      label: 'Визитов на клиента',
+      value: formatDecimal(visitMetrics.visits_per_client),
+      delta: formatPct(visitMetrics.visits_per_client_change_pct),
+      deltaValue: visitMetrics.visits_per_client_change_pct,
+    },
+    {
+      label: 'Клиенты с доп. услугами',
+      value: formatMetricValue(visitMetrics.extra_service_clients_pct, 'percent'),
+      delta: `${formatNumber(visitMetrics.extra_service_clients)} клиентов`,
+      deltaValue: null,
+    },
+  ];
+
+  renderCards(els.visitMetrics, cards);
 }
 
 function destroyChart(name) {
@@ -559,6 +600,7 @@ function renderBundle(bundle) {
     extra_services: extraServices = [],
   } = bundle;
   renderKpi(summary);
+  renderVisitMetrics(summary);
   renderRevenueChart(daily);
   renderAppointmentsChart(daily);
   renderServicesChart(services.slice(0, 8));

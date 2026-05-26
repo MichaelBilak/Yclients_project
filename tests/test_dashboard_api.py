@@ -148,12 +148,24 @@ async def test_dashboard_summary_split_revenue_and_average_checks(async_session)
             seance_length=3600,
             attendance=1,
         ),
+        Appointment(
+            id=3,
+            company_id=1,
+            staff_id=1,
+            client_id=1,
+            date=date(2025, 1, 12),
+            datetime=datetime(2025, 1, 12, 12, 0, 0),
+            create_date=datetime(2025, 1, 11, 12, 0, 0),
+            seance_length=3600,
+            attendance=1,
+        ),
     ])
     await async_session.flush()
     async_session.add_all([
         Transaction(id=1, appointment_id=1, service_id=10, service_title='Стрижка', cost=1000.0, first_cost=1000.0, amount=1, company_id=1),
         Transaction(id=2, appointment_id=1, service_id=11, service_title='Воск', cost=500.0, first_cost=500.0, amount=1, company_id=1),
         Transaction(id=3, appointment_id=2, service_id=10, service_title='Стрижка', cost=1500.0, first_cost=1500.0, amount=1, company_id=1),
+        Transaction(id=4, appointment_id=1, service_id=11, service_title='Воск', cost=700.0, first_cost=700.0, amount=1, company_id=1),
         GoodTransaction(
             id=1,
             document_id=1,
@@ -188,19 +200,26 @@ async def test_dashboard_summary_split_revenue_and_average_checks(async_session)
 
     assert r.status_code == 200
     data = r.json()['data']
-    assert data['revenue']['total'] == 3600.0
-    assert data['revenue']['service_revenue'] == 3000.0
+    assert data['revenue']['total'] == 4300.0
+    assert data['revenue']['service_revenue'] == 3700.0
     assert data['revenue']['goods_revenue'] == 600.0
-    assert data['revenue']['extra_service_revenue'] == 500.0
-    assert data['revenue']['appointments'] == 2
-    assert data['revenue']['service_count'] == 3.0
+    assert data['revenue']['extra_service_revenue'] == 1200.0
+    assert data['revenue']['appointments'] == 3
+    assert data['revenue']['service_count'] == 4.0
     assert data['revenue']['goods_count'] == 1.0
-    assert data['revenue']['extra_service_count'] == 1.0
+    assert data['revenue']['extra_service_count'] == 2.0
     assert data['revenue']['extra_service_appointments'] == 1
-    assert data['average_check']['total'] == 1800.0
-    assert data['average_check']['services'] == 1500.0
-    assert data['average_check']['goods'] == 300.0
-    assert data['average_check']['extra_services'] == 250.0
+    assert data['revenue']['unique_clients'] == 2
+    assert data['revenue']['extra_service_clients'] == 1
+    assert data['average_check']['total'] == pytest.approx(1433.3333333333333)
+    assert data['average_check']['services'] == pytest.approx(1233.3333333333333)
+    assert data['average_check']['goods'] == 600.0
+    assert data['average_check']['extra_services'] == 600.0
+    assert data['visit_metrics']['extra_services_per_appointment_pct'] == pytest.approx(66.66666666666666)
+    assert data['visit_metrics']['unique_clients'] == 2
+    assert data['visit_metrics']['visits_per_client'] == 1.5
+    assert data['visit_metrics']['extra_service_clients'] == 1
+    assert data['visit_metrics']['extra_service_clients_pct'] == 50.0
 
 
 @pytest.mark.asyncio

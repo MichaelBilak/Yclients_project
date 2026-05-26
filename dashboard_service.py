@@ -273,6 +273,10 @@ async def _revenue_block(
         (ServiceLabel.is_extra.is_(True), Appointment.id),
         else_=None,
     )
+    extra_client = case(
+        (ServiceLabel.is_extra.is_(True), Appointment.client_id),
+        else_=None,
+    )
     service_count = func.coalesce(func.sum(func.coalesce(Transaction.amount, 0)), 0)
     extra_service_count = func.coalesce(
         func.sum(
@@ -292,6 +296,7 @@ async def _revenue_block(
             func.count(func.distinct(Appointment.id)).label('appointments'),
             func.count(func.distinct(extra_appt)).label('extra_service_appointments'),
             func.count(func.distinct(Appointment.client_id)).label('unique_clients'),
+            func.count(func.distinct(extra_client)).label('extra_service_clients'),
         )
         .select_from(Appointment)
         .outerjoin(Transaction, Transaction.appointment_id == Appointment.id)
@@ -314,6 +319,7 @@ async def _revenue_block(
         'appointments': int(row.appointments or 0),
         'extra_service_appointments': int(row.extra_service_appointments or 0),
         'unique_clients': int(row.unique_clients or 0),
+        'extra_service_clients': int(row.extra_service_clients or 0),
     }
 
 
@@ -338,10 +344,36 @@ async def fetch_summary(
     prev_avg_total = _safe_div(prev_rev, prev_appointments)
     cur_avg_services = _safe_div(cur['service_revenue'], cur_appointments)
     prev_avg_services = _safe_div(prev['service_revenue'], prev_appointments)
-    cur_avg_goods = _safe_div(cur['goods_revenue'], cur_appointments)
-    prev_avg_goods = _safe_div(prev['goods_revenue'], prev_appointments)
-    cur_avg_extra_services = _safe_div(cur['extra_service_revenue'], cur_appointments)
-    prev_avg_extra_services = _safe_div(prev['extra_service_revenue'], prev_appointments)
+    cur_avg_goods = _safe_div(cur['goods_revenue'], float(cur['goods_count'] or 0))
+    prev_avg_goods = _safe_div(prev['goods_revenue'], float(prev['goods_count'] or 0))
+    cur_avg_extra_services = _safe_div(
+        cur['extra_service_revenue'],
+        float(cur['extra_service_count'] or 0),
+    )
+    prev_avg_extra_services = _safe_div(
+        prev['extra_service_revenue'],
+        float(prev['extra_service_count'] or 0),
+    )
+    cur_extra_services_per_appointment_pct = 100.0 * _safe_div(
+        float(cur['extra_service_count'] or 0),
+        cur_appointments,
+    )
+    prev_extra_services_per_appointment_pct = 100.0 * _safe_div(
+        float(prev['extra_service_count'] or 0),
+        prev_appointments,
+    )
+    cur_unique_clients = float(cur['unique_clients'] or 0)
+    prev_unique_clients = float(prev['unique_clients'] or 0)
+    cur_visits_per_client = _safe_div(cur_appointments, cur_unique_clients)
+    prev_visits_per_client = _safe_div(prev_appointments, prev_unique_clients)
+    cur_extra_service_clients_pct = 100.0 * _safe_div(
+        float(cur['extra_service_clients'] or 0),
+        cur_unique_clients,
+    )
+    prev_extra_service_clients_pct = 100.0 * _safe_div(
+        float(prev['extra_service_clients'] or 0),
+        prev_unique_clients,
+    )
 
     attended = func.sum(case((Appointment.attendance > 0, 1), else_=0))
     cancelled = func.sum(case((Appointment.attendance == -1, 1), else_=0))
@@ -392,6 +424,33 @@ async def fetch_summary(
             'unique_clients': cur['unique_clients'],
             'unique_clients_change_pct': _pct_change(
                 float(cur['unique_clients']), float(prev['unique_clients'])
+            ),
+            'extra_service_clients': cur['extra_service_clients'],
+            'extra_service_clients_change_pct': _pct_change(
+                float(cur['extra_service_clients']), float(prev['extra_service_clients'])
+            ),
+        },
+        'visit_metrics': {
+            'extra_services_per_appointment_pct': cur_extra_services_per_appointment_pct,
+            'extra_services_per_appointment_pct_change_pct': _pct_change(
+                cur_extra_services_per_appointment_pct,
+                prev_extra_services_per_appointment_pct,
+            ),
+            'unique_clients': cur['unique_clients'],
+            'unique_clients_change_pct': _pct_change(
+                float(cur['unique_clients']),
+                float(prev['unique_clients']),
+            ),
+            'visits_per_client': cur_visits_per_client,
+            'visits_per_client_change_pct': _pct_change(
+                cur_visits_per_client,
+                prev_visits_per_client,
+            ),
+            'extra_service_clients': cur['extra_service_clients'],
+            'extra_service_clients_pct': cur_extra_service_clients_pct,
+            'extra_service_clients_pct_change_pct': _pct_change(
+                cur_extra_service_clients_pct,
+                prev_extra_service_clients_pct,
             ),
         },
         'average_check': {
