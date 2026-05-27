@@ -1045,6 +1045,45 @@ async def test_plan_fact_excludes_fired_staff(async_session):
 
 
 @pytest.mark.asyncio
+async def test_plan_fact_lists_active_staff_when_branch_has_only_branch_plan(async_session):
+    async_session.add(Group(id=1, title='G1'))
+    async_session.add(Company(id=1, title='Salon', group_id=1))
+    async_session.add(Staff(id=1, name='Active', position='Барбер', company_id=1, fired=0))
+    async_session.add(Staff(id=2, name='Admin', position='Администратор', company_id=1, fired=0))
+    async_session.add(Staff(id=3, name='Fired', position='Барбер', company_id=1, fired=1))
+    now = datetime(2025, 1, 1)
+    async_session.add(
+        PlanMetric(
+            period_start=date(2025, 1, 1),
+            period_end=date(2025, 1, 31),
+            company_id=1,
+            metric_code='revenue',
+            value=1000.0,
+            updated_at=now,
+        )
+    )
+    await async_session.commit()
+
+    async def override_db():
+        yield async_session
+
+    app.dependency_overrides[api.get_async_db] = override_db
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url='http://test') as client:
+        r = await client.get(
+            '/dashboard/widget/plan_fact',
+            params={'start_date': '2025-01-01', 'end_date': '2025-01-31', 'company_id': 1},
+        )
+    app.dependency_overrides.clear()
+
+    assert r.status_code == 200
+    groups = r.json()['data']['groups']
+    assert [group['title'] for group in groups] == ['Admin', 'Active']
+    barber_cells = {cell['code']: cell for cell in groups[1]['metrics']}
+    assert barber_cells['revenue']['plan'] is None
+
+
+@pytest.mark.asyncio
 async def test_opz_period_uses_future_appointment_create_date(async_session):
     async_session.add(Group(id=1, title='G1'))
     async_session.add(Company(id=1, title='Salon', group_id=1))

@@ -1124,6 +1124,7 @@ async def _staff_plan_groups_for_branch(
     plan_end: date,
     branch_id: int,
     staff_id: Optional[int] = None,
+    include_all_when_branch_planned: bool = False,
 ) -> list[dict[str, Any]]:
     staff_rows = await _fetch_company_staff(db, branch_id, staff_id)
     staff_ids = [int(row.id) for row in staff_rows]
@@ -1134,10 +1135,12 @@ async def _staff_plan_groups_for_branch(
         branch_id,
         staff_ids,
     )
-    staff_rows = [
-        staff for staff in staff_rows
-        if _has_plan_values(plans_by_staff.get(int(staff.id), {}))
-    ]
+    has_staff_plans = any(_has_plan_values(plans_by_staff.get(int(staff.id), {})) for staff in staff_rows)
+    if has_staff_plans or not include_all_when_branch_planned:
+        staff_rows = [
+            staff for staff in staff_rows
+            if _has_plan_values(plans_by_staff.get(int(staff.id), {}))
+        ]
     staff_ids = [int(row.id) for row in staff_rows]
     categories_by_staff_id: dict[int, str] = {}
     for staff in staff_rows:
@@ -1286,6 +1289,7 @@ async def fetch_plan_fact(
             plan_end,
             branch_id,
             staff_id,
+            include_all_when_branch_planned=_has_plan_values(plans_by_company.get(branch_id, {})),
         )
 
         return {
@@ -1349,6 +1353,7 @@ async def fetch_plan_fact(
                 plan_start,
                 plan_end,
                 branch_id,
+                include_all_when_branch_planned=_has_plan_values(plans_by_company.get(branch_id, {})),
             ),
         })
 
