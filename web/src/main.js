@@ -553,30 +553,61 @@ function renderPlanSection(title, groups, metrics, meta = '') {
   `;
 }
 
+function renderStaffCategorySections(prefix, groups, metricSets, metrics) {
+  const sections = [];
+  const categoryOrder = ['barber', 'administrator', 'unknown'];
+  categoryOrder.forEach((category) => {
+    const categoryGroups = groups.filter((group) => (group.category || 'unknown') === category);
+    if (!categoryGroups.length) return;
+    const categoryMetrics = metricSets[category] || metrics;
+    const label = categoryGroups[0].category_label || category;
+    const title = prefix ? `${prefix} · ${label}` : label;
+    sections.push(renderPlanSection(title, categoryGroups, categoryMetrics, `${categoryGroups.length} сотрудников`));
+  });
+  return sections;
+}
+
+function renderBranchStaffSections(planFact, metricSets, metrics) {
+  const sections = [];
+  const branchMetrics = metricSets.branch || metrics;
+  const networkGroup = (planFact.groups || []).find((group) => group.scope === 'network');
+  if (networkGroup) {
+    sections.push(renderPlanSection('Итого по сети', [networkGroup], branchMetrics));
+  }
+
+  (planFact.branch_sections || []).forEach((section) => {
+    const branchTitle = section.branch?.title || section.parent_group?.title || 'Филиал';
+    const staffGroups = section.groups || [];
+    if (section.parent_group) {
+      sections.push(renderPlanSection(`${branchTitle} · Итого`, [section.parent_group], branchMetrics, `${staffGroups.length} сотрудников`));
+    }
+    sections.push(...renderStaffCategorySections(branchTitle, staffGroups, metricSets, metrics));
+  });
+
+  return sections.join('');
+}
+
 function renderPlanFact(planFact) {
   const groups = planFact?.groups || [];
   const metrics = planFact?.metrics || [];
-  if (!groups.length && !planFact?.parent_group) {
+  const branchSections = planFact?.branch_sections || [];
+  if (!groups.length && !planFact?.parent_group && !branchSections.length) {
     els.planFactTable.innerHTML = '<div class="empty">Нет плана за выбранный период</div>';
     els.planMeta.textContent = '';
     return;
   }
 
   const metricSets = planFact?.metric_sets || {};
-  if (planFact?.view_scope === 'staff') {
+  if (branchSections.length) {
+    els.planFactTable.innerHTML = renderBranchStaffSections(planFact, metricSets, metrics)
+      || renderPlanTable(groups, metrics);
+  } else if (planFact?.view_scope === 'staff') {
     const sections = [];
     if (planFact.parent_group) {
       sections.push(renderPlanSection('Итого по филиалу', [planFact.parent_group], metricSets.branch || metrics));
     }
 
-    const categoryOrder = ['barber', 'administrator', 'unknown'];
-    categoryOrder.forEach((category) => {
-      const categoryGroups = groups.filter((group) => (group.category || 'unknown') === category);
-      if (!categoryGroups.length) return;
-      const categoryMetrics = metricSets[category] || metrics;
-      const label = categoryGroups[0].category_label || category;
-      sections.push(renderPlanSection(label, categoryGroups, categoryMetrics, `${categoryGroups.length} сотрудников`));
-    });
+    sections.push(...renderStaffCategorySections('', groups, metricSets, metrics));
 
     els.planFactTable.innerHTML = sections.join('') || '<div class="empty">Нет сотрудников для выбранного филиала</div>';
   } else {
@@ -586,7 +617,10 @@ function renderPlanFact(planFact) {
   const planPeriod = planFact?.plan_period;
   const planPeriodText = planPeriod ? ` · план ${planPeriod.start} .. ${planPeriod.end}` : '';
   const selectedStaff = planFact?.selected_staff;
-  const scopeText = planFact?.view_scope === 'staff'
+  const staffRows = branchSections.reduce((total, section) => total + (section.groups || []).length, 0);
+  const scopeText = branchSections.length
+    ? `сеть, филиалы и сотрудники · ${staffRows} сотрудников`
+    : planFact?.view_scope === 'staff'
     ? `${planFact.branch?.title || 'Филиал'} · ${selectedStaff?.name || 'сотрудники'}`
     : 'сеть и филиалы';
   els.planMeta.textContent = `${scopeText} · ${groups.length} строк${planPeriodText}`;

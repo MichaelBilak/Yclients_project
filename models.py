@@ -71,7 +71,7 @@ class ServiceLabel(Base):
     __tablename__ = 'service_labels'
 
     service_id = Column(Integer, ForeignKey('services.id'), primary_key=True)
-    company_id = Column(Integer, ForeignKey('companies.id'), nullable=False, index=True)
+    company_id = Column(Integer, ForeignKey('companies.id'), primary_key=True, index=True)
     is_extra = Column(Boolean, nullable=False, default=False)
     source = Column(String, default='google_sheet')
     updated_at = Column(DateTime, nullable=False)

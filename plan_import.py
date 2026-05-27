@@ -53,8 +53,9 @@ STAFF_CATEGORY_ALIASES = ('staff_category', 'category', 'position', 'role', 'д�
 NETWORK_NAMES = {'сеть', 'итого', 'total', 'network'}
 VALIDATION_TOLERANCE = 0.01
 
-SERVICE_ID_ALIASES = ('service_id', 'yclients_service_id', 'id услуги', 'id', 'service id')
+SERVICE_ID_ALIASES = ('service_id', 'yclients_service_id', 'id услуги', 'id_услуги', 'id', 'service id')
 SERVICE_TITLE_ALIASES = ('service', 'service_title', 'title', 'услуга', 'название услуги')
+SERVICE_CATEGORY_ALIASES = ('category', 'service_category', 'категория', 'категория услуги')
 SERVICE_EXTRA_ALIASES = (
     'is_extra',
     'extra_service',
@@ -357,8 +358,24 @@ def _validate_plan_totals(parsed_rows: list[ParsedPlanRow]) -> list[str]:
 
 
 def _csv_text_from_url(url: str) -> str:
+    url = _normalize_google_sheet_csv_url(url)
     with urllib.request.urlopen(url, timeout=30) as response:
         return response.read().decode('utf-8-sig')
+
+
+def _normalize_google_sheet_csv_url(url: str) -> str:
+    raw = str(url or '').strip()
+    match = re.search(r'/spreadsheets/d/([^/]+)', raw)
+    if not match or '/export?' in raw or '/gviz/' in raw:
+        return raw
+
+    parsed = urllib.parse.urlparse(raw)
+    query = urllib.parse.parse_qs(parsed.query)
+    fragment = urllib.parse.parse_qs(parsed.fragment)
+    gid = (fragment.get('gid') or query.get('gid') or ['0'])[0]
+    spreadsheet_id = match.group(1)
+    export_query = urllib.parse.urlencode({'format': 'csv', 'gid': gid})
+    return f'https://docs.google.com/spreadsheets/d/{spreadsheet_id}/export?{export_query}'
 
 
 def _sheet_csv_url_from_spreadsheet_url(url: str, sheet_name: str) -> str:
@@ -511,14 +528,12 @@ async def import_services_sheet_csv(
     csv_text: str,
     source: str = 'google_sheet:services',
 ) -> dict[str, Any]:
-    service_rows = (await db.execute(select(Service.id, Service.title, Service.company_id))).all()
+    service_rows = (await db.execute(select(Service.id, Service.title, Service.company_id, Service.category_title))).all()
     services_by_id = {int(row.id): row for row in service_rows}
-    services_by_company_title = {
-        (int(row.company_id), _normalize(row.title)): row
-        for row in service_rows
-    }
+    services_by_company_title: dict[tuple[int, str], list[Any]] = {}
     services_by_title: dict[str, list[Any]] = {}
     for row in service_rows:
+        services_by_company_title.setdefault((int(row.company_id), _normalize(row.title)), []).append(row)
         services_by_title.setdefault(_normalize(row.title), []).append(row)
 
     company_rows = (await db.execute(select(Company.id, Company.title))).all()
@@ -528,27 +543,45 @@ async def import_services_sheet_csv(
     now = datetime.utcnow()
     skipped: list[str] = []
     warnings: list[str] = []
-    labels_by_service_id: dict[int, ServiceLabel] = {}
+    labels_by_service_key: dict[tuple[int, int], ServiceLabel] = {}
     processed_markers = 0
 
     for index, row in enumerate(reader, start=2):
         service_id_value = _find_value(row, SERVICE_ID_ALIASES).strip()
         service_id = int(service_id_value) if service_id_value.isdigit() else None
         service_row = services_by_id.get(service_id) if service_id is not None else None
+        matched_by_id = service_row is not None
         matched_services = [service_row] if service_row is not None else []
         title_value = _find_value(row, SERVICE_TITLE_ALIASES)
+        category_value = _find_value(row, SERVICE_CATEGORY_ALIASES)
+        category_key = _normalize(category_value)
+
+        company_id_value = _find_value(row, COMPANY_ID_ALIASES).strip()
+        company_id = int(company_id_value) if company_id_value.isdigit() else None
+        if company_id is None:
+            branch_value = _find_value(row, BRANCH_ALIASES)
+            company_id = companies_by_title.get(_normalize(branch_value))
 
         if service_row is None:
-            company_id_value = _find_value(row, COMPANY_ID_ALIASES).strip()
-            company_id = int(company_id_value) if company_id_value.isdigit() else None
-            if company_id is None:
-                branch_value = _find_value(row, BRANCH_ALIASES)
-                company_id = companies_by_title.get(_normalize(branch_value))
             if company_id is not None and title_value:
-                service_row = services_by_company_title.get((company_id, _normalize(title_value)))
-                matched_services = [service_row] if service_row is not None else []
+                matched_services = list(services_by_company_title.get((company_id, _normalize(title_value)), []))
             elif title_value:
-                matched_services = services_by_title.get(_normalize(title_value), [])
+                matched_services = list(services_by_title.get(_normalize(title_value), []))
+
+        if company_id is not None:
+            matched_services = [
+                matched_service
+                for matched_service in matched_services
+                if matched_service is not None and int(matched_service.company_id) == company_id
+            ]
+        if category_key and not matched_by_id:
+            category_matches = [
+                matched_service
+                for matched_service in matched_services
+                if matched_service is not None and _normalize(matched_service.category_title) == category_key
+            ]
+            if category_matches:
+                matched_services = category_matches
 
         if not matched_services:
             skipped.append(f'row {index}: unknown service {service_id_value or _find_value(row, SERVICE_TITLE_ALIASES)}')
@@ -564,9 +597,10 @@ async def import_services_sheet_csv(
         if is_extra:
             for matched_service in matched_services:
                 service_id = int(matched_service.id)
-                labels_by_service_id[service_id] = ServiceLabel(
+                company_id = int(matched_service.company_id)
+                labels_by_service_key[(service_id, company_id)] = ServiceLabel(
                     service_id=service_id,
-                    company_id=int(matched_service.company_id),
+                    company_id=company_id,
                     is_extra=True,
                     source=source,
                     updated_at=now,
@@ -578,7 +612,7 @@ async def import_services_sheet_csv(
 
     await db.execute(delete(ServiceLabel))
     imported = 0
-    for label in labels_by_service_id.values():
+    for label in labels_by_service_key.values():
         db.add(label)
         imported += 1
     await db.commit()

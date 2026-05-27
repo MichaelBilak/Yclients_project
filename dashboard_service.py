@@ -232,6 +232,20 @@ def _service_group_key(title_expr, service_id_expr):
     return func.coalesce(func.nullif(normalized_title, ''), cast(service_id_expr, String))
 
 
+def _transaction_service_label_join():
+    return and_(
+        ServiceLabel.service_id == Transaction.service_id,
+        ServiceLabel.company_id == Appointment.company_id,
+    )
+
+
+def _financial_service_label_join():
+    return and_(
+        ServiceLabel.service_id == FinancialTransaction.sold_item_id,
+        ServiceLabel.company_id == Appointment.company_id,
+    )
+
+
 def _derive_metric_values(
     values: dict[str, float],
     *,
@@ -333,7 +347,7 @@ async def _revenue_block(
         )
         .select_from(Appointment)
         .outerjoin(Transaction, Transaction.appointment_id == Appointment.id)
-        .outerjoin(ServiceLabel, ServiceLabel.service_id == Transaction.service_id)
+        .outerjoin(ServiceLabel, _transaction_service_label_join())
         .where(cond)
     )
     paid_stmt = (
@@ -351,7 +365,7 @@ async def _revenue_block(
         )
         .select_from(FinancialTransaction)
         .join(Appointment, Appointment.id == FinancialTransaction.record_id)
-        .outerjoin(ServiceLabel, ServiceLabel.service_id == FinancialTransaction.sold_item_id)
+        .outerjoin(ServiceLabel, _financial_service_label_join())
         .where(_service_paid_filters(dr.start, dr.end, company_id, staff_id))
     )
     row = (await db.execute(counts_stmt)).one()
@@ -711,7 +725,7 @@ async def fetch_extra_services(
         )
         .select_from(Transaction)
         .join(Appointment, Appointment.id == Transaction.appointment_id)
-        .join(ServiceLabel, ServiceLabel.service_id == Transaction.service_id)
+        .join(ServiceLabel, _transaction_service_label_join())
         .outerjoin(Service, Service.id == Transaction.service_id)
         .where(
             _appt_revenue_filters(start, end, company_id, staff_id),
@@ -750,7 +764,7 @@ async def fetch_extra_services(
                 tx_titles.c.service_id == FinancialTransaction.sold_item_id,
             ),
         )
-        .join(ServiceLabel, ServiceLabel.service_id == FinancialTransaction.sold_item_id)
+        .join(ServiceLabel, _financial_service_label_join())
         .outerjoin(Service, Service.id == FinancialTransaction.sold_item_id)
         .where(
             _service_paid_filters(start, end, company_id, staff_id),
@@ -1102,6 +1116,78 @@ async def _fetch_company_staff(
     ]
 
 
+async def _staff_plan_groups_for_branch(
+    db: AsyncSession,
+    start: date,
+    end: date,
+    plan_start: date,
+    plan_end: date,
+    branch_id: int,
+    staff_id: Optional[int] = None,
+) -> list[dict[str, Any]]:
+    staff_rows = await _fetch_company_staff(db, branch_id, staff_id)
+    staff_ids = [int(row.id) for row in staff_rows]
+    plans_by_staff, categories_by_staff = await _plan_metric_components_by_staff(
+        db,
+        plan_start,
+        plan_end,
+        branch_id,
+        staff_ids,
+    )
+    staff_rows = [
+        staff for staff in staff_rows
+        if _has_nonzero_plan(plans_by_staff.get(int(staff.id), {}))
+    ]
+    staff_ids = [int(row.id) for row in staff_rows]
+    categories_by_staff_id: dict[int, str] = {}
+    for staff in staff_rows:
+        sid = int(staff.id)
+        plan_values = plans_by_staff.get(sid, {})
+        categories_by_staff_id[sid] = _staff_category(staff, categories_by_staff.get(sid), plan_values)
+
+    user_id_by_staff: dict[int, Optional[int]] = {
+        int(staff.id): getattr(staff, 'user_id', None) for staff in staff_rows
+    }
+
+    facts_by_staff: dict[int, dict[str, float]] = {}
+    for sid in staff_ids:
+        admin_user_id = (
+            user_id_by_staff.get(sid)
+            if categories_by_staff_id.get(sid) == 'administrator'
+            else None
+        )
+        facts_by_staff[sid] = await _fact_metric_components(
+            db,
+            start,
+            end,
+            branch_id,
+            sid,
+            created_user_id=admin_user_id,
+        )
+
+    groups: list[dict[str, Any]] = []
+    for staff in staff_rows:
+        sid = int(staff.id)
+        plan_values = plans_by_staff.get(sid, {})
+        category = categories_by_staff_id[sid]
+        metrics = metrics_for_category(category)
+        groups.append({
+            'company_id': branch_id,
+            'staff_id': sid,
+            'title': staff.name,
+            'position': staff.position,
+            'scope': 'staff',
+            'category': category,
+            'category_label': STAFF_CATEGORY_LABELS.get(category, STAFF_CATEGORY_LABELS['unknown']),
+            'metrics': _metric_cells(
+                plan_values,
+                facts_by_staff.get(sid, {}),
+                metrics,
+            ),
+        })
+    return groups
+
+
 async def fetch_staff(
     db: AsyncSession,
     company_id: Optional[int] = None,
@@ -1185,42 +1271,6 @@ async def fetch_plan_fact(
 
         branch_id = company_ids[0]
         branch = branches[0]
-        staff_rows = await _fetch_company_staff(db, branch_id, staff_id)
-        staff_ids = [int(row.id) for row in staff_rows]
-        plans_by_staff, categories_by_staff = await _plan_metric_components_by_staff(
-            db,
-            plan_start,
-            plan_end,
-            branch_id,
-            staff_ids,
-        )
-        staff_rows = [
-            staff for staff in staff_rows
-            if _has_nonzero_plan(plans_by_staff.get(int(staff.id), {}))
-        ]
-        staff_ids = [int(row.id) for row in staff_rows]
-        categories_by_staff_id: dict[int, str] = {}
-        for staff in staff_rows:
-            sid = int(staff.id)
-            plan_values = plans_by_staff.get(sid, {})
-            categories_by_staff_id[sid] = _staff_category(staff, categories_by_staff.get(sid), plan_values)
-
-        user_id_by_staff: dict[int, Optional[int]] = {
-            int(staff.id): getattr(staff, 'user_id', None) for staff in staff_rows
-        }
-
-        facts_by_staff: dict[int, dict[str, float]] = {}
-        for staff_id in staff_ids:
-            admin_user_id = (
-                user_id_by_staff.get(staff_id)
-                if categories_by_staff_id.get(staff_id) == 'administrator'
-                else None
-            )
-            facts_by_staff[staff_id] = await _fact_metric_components(
-                db, start, end, branch_id, staff_id,
-                created_user_id=admin_user_id,
-            )
-
         branch_fact = await _fact_metric_components(db, start, end, branch_id)
         parent_group = {
             'company_id': branch_id,
@@ -1228,27 +1278,15 @@ async def fetch_plan_fact(
             'scope': 'branch',
             'metrics': _metric_cells(plans_by_company.get(branch_id, {}), branch_fact),
         }
-
-        groups: list[dict[str, Any]] = []
-        for staff in staff_rows:
-            staff_id = int(staff.id)
-            plan_values = plans_by_staff.get(staff_id, {})
-            category = categories_by_staff_id[staff_id]
-            metrics = metrics_for_category(category)
-            groups.append({
-                'company_id': branch_id,
-                'staff_id': staff_id,
-                'title': staff.name,
-                'position': staff.position,
-                'scope': 'staff',
-                'category': category,
-                'category_label': STAFF_CATEGORY_LABELS.get(category, STAFF_CATEGORY_LABELS['unknown']),
-                'metrics': _metric_cells(
-                    plan_values,
-                    facts_by_staff.get(staff_id, {}),
-                    metrics,
-                ),
-            })
+        groups = await _staff_plan_groups_for_branch(
+            db,
+            start,
+            end,
+            plan_start,
+            plan_end,
+            branch_id,
+            staff_id,
+        )
 
         return {
             'period': {'start': start.isoformat(), 'end': end.isoformat()},
@@ -1289,6 +1327,31 @@ async def fetch_plan_fact(
             ),
         })
 
+    branch_sections: list[dict[str, Any]] = []
+    for branch in branches:
+        branch_id = int(branch['id'])
+        parent_group = {
+            'company_id': branch_id,
+            'title': branch['title'],
+            'scope': 'branch',
+            'metrics': _metric_cells(
+                plans_by_company.get(branch_id, {}),
+                facts_by_company.get(branch_id, {}),
+            ),
+        }
+        branch_sections.append({
+            'branch': branch,
+            'parent_group': parent_group,
+            'groups': await _staff_plan_groups_for_branch(
+                db,
+                start,
+                end,
+                plan_start,
+                plan_end,
+                branch_id,
+            ),
+        })
+
     return {
         'period': {'start': start.isoformat(), 'end': end.isoformat()},
         'plan_period': {'start': plan_start.isoformat(), 'end': plan_end.isoformat()},
@@ -1296,6 +1359,7 @@ async def fetch_plan_fact(
         'metrics': list(PLAN_FACT_METRICS),
         'metric_sets': _metric_sets_payload(),
         'groups': groups,
+        'branch_sections': branch_sections,
     }
 
 

@@ -7,7 +7,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 import api
-from plan_import import import_plan_sheet_csv, import_services_sheet_csv
+from plan_import import import_plan_sheet_csv, import_services_sheet_csv, _normalize_google_sheet_csv_url
 from api import app
 from models import (
     Appointment,
@@ -328,6 +328,98 @@ async def test_dashboard_top_services_merges_same_service_name_across_branches(a
     assert extra_rows[0]['revenue'] == 500.0
     assert extra_rows[0]['service_count'] == 2
     assert extra_rows[0]['branch_count'] == 2
+
+
+@pytest.mark.asyncio
+async def test_extra_service_labels_are_scoped_to_branch_in_calculations(async_session):
+    async_session.add(Group(id=1, title='G1'))
+    async_session.add(Company(id=1, title='Salon 1', group_id=1))
+    async_session.add(Company(id=2, title='Salon 2', group_id=1))
+    async_session.add(Staff(id=1, name='Master 1', position='Барбер', company_id=1))
+    async_session.add(Staff(id=2, name='Master 2', position='Барбер', company_id=2))
+    async_session.add(Client(id=1, name='Client 1', company_id=1, visits_count=1, last_visit_date=date(2025, 1, 10)))
+    async_session.add(Client(id=2, name='Client 2', company_id=2, visits_count=1, last_visit_date=date(2025, 1, 11)))
+    async_session.add(Service(id=10, title='Branch-only extra', category_title='Уход', company_id=1))
+    await async_session.flush()
+    async_session.add_all([
+        Appointment(
+            id=1,
+            company_id=1,
+            staff_id=1,
+            client_id=1,
+            date=date(2025, 1, 10),
+            datetime=datetime(2025, 1, 10, 12, 0, 0),
+            create_date=datetime(2025, 1, 9, 12, 0, 0),
+            seance_length=3600,
+            attendance=1,
+        ),
+        Appointment(
+            id=2,
+            company_id=2,
+            staff_id=2,
+            client_id=2,
+            date=date(2025, 1, 11),
+            datetime=datetime(2025, 1, 11, 12, 0, 0),
+            create_date=datetime(2025, 1, 10, 12, 0, 0),
+            seance_length=3600,
+            attendance=1,
+        ),
+    ])
+    await async_session.flush()
+    async_session.add_all([
+        Transaction(id=1, appointment_id=1, service_id=10, service_title='Branch-only extra', cost=100.0, first_cost=100.0, amount=1, company_id=1),
+        Transaction(id=2, appointment_id=2, service_id=10, service_title='Branch-only extra', cost=200.0, first_cost=200.0, amount=1, company_id=2),
+        FinancialTransaction(id=1, date=datetime(2025, 1, 10, 12, 0, 0), amount=100.0, record_id=1, visit_id=1, sold_item_id=10, sold_item_type='service', master_id=1, company_id=1),
+        FinancialTransaction(id=2, date=datetime(2025, 1, 11, 12, 0, 0), amount=200.0, record_id=2, visit_id=2, sold_item_id=10, sold_item_type='service', master_id=2, company_id=2),
+        ServiceLabel(service_id=10, company_id=1, is_extra=True, source='google_sheet:services', updated_at=datetime(2025, 1, 1, 0, 0, 0)),
+    ])
+    await async_session.commit()
+
+    async def override_db():
+        yield async_session
+
+    app.dependency_overrides[api.get_async_db] = override_db
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url='http://test') as client:
+        all_summary = await client.get(
+            '/dashboard/widget/summary',
+            params={'start_date': '2025-01-01', 'end_date': '2025-01-31'},
+        )
+        branch_summary = await client.get(
+            '/dashboard/widget/summary',
+            params={'start_date': '2025-01-01', 'end_date': '2025-01-31', 'company_id': 1},
+        )
+        other_branch_summary = await client.get(
+            '/dashboard/widget/summary',
+            params={'start_date': '2025-01-01', 'end_date': '2025-01-31', 'company_id': 2},
+        )
+        extra_services = await client.get(
+            '/dashboard/widget/extra_services',
+            params={'start_date': '2025-01-01', 'end_date': '2025-01-31'},
+        )
+    app.dependency_overrides.clear()
+
+    all_data = all_summary.json()['data']
+    branch_data = branch_summary.json()['data']
+    other_branch_data = other_branch_summary.json()['data']
+
+    assert all_summary.status_code == 200
+    assert branch_summary.status_code == 200
+    assert other_branch_summary.status_code == 200
+    assert all_data['revenue']['service_revenue'] == 300.0
+    assert all_data['revenue']['extra_service_revenue'] == 100.0
+    assert all_data['revenue']['extra_service_count'] == 1.0
+    assert branch_data['revenue']['extra_service_revenue'] == 100.0
+    assert branch_data['revenue']['extra_service_count'] == 1.0
+    assert other_branch_data['revenue']['extra_service_revenue'] == 0.0
+    assert other_branch_data['revenue']['extra_service_count'] == 0.0
+
+    assert extra_services.status_code == 200
+    extra_rows = extra_services.json()['data']
+    assert len(extra_rows) == 1
+    assert extra_rows[0]['sold'] == 1
+    assert extra_rows[0]['revenue'] == 100.0
+    assert extra_rows[0]['branch_count'] == 1
 
 
 @pytest.mark.asyncio
@@ -763,6 +855,66 @@ async def test_dashboard_plan_fact_uses_plan_and_fact_formulas(async_session):
 
 
 @pytest.mark.asyncio
+async def test_dashboard_plan_fact_lists_staff_plans_for_each_branch(async_session):
+    async_session.add(Group(id=1, title='G1'))
+    async_session.add(Company(id=1, title='Salon 1', group_id=1))
+    async_session.add(Company(id=2, title='Salon 2', group_id=1))
+    async_session.add(Staff(id=1, name='Master 1', position='Барбер', company_id=1, fired=0))
+    async_session.add(Staff(id=2, name='Admin 2', position='Администратор', company_id=2, fired=0, user_id=500))
+    async_session.add(Staff(id=3, name='No Plan', position='Барбер', company_id=2, fired=0))
+    now = datetime(2025, 1, 1, 0, 0, 0)
+    async_session.add_all([
+        PlanMetric(
+            period_start=date(2025, 1, 1),
+            period_end=date(2025, 1, 31),
+            company_id=1,
+            staff_id=1,
+            staff_category='barber',
+            metric_code='revenue',
+            value=1000.0,
+            updated_at=now,
+        ),
+        PlanMetric(
+            period_start=date(2025, 1, 1),
+            period_end=date(2025, 1, 31),
+            company_id=2,
+            staff_id=2,
+            staff_category='administrator',
+            metric_code='revenue',
+            value=2000.0,
+            updated_at=now,
+        ),
+    ])
+    await async_session.commit()
+
+    async def override_db():
+        yield async_session
+
+    app.dependency_overrides[api.get_async_db] = override_db
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url='http://test') as client:
+        r = await client.get(
+            '/dashboard/widget/plan_fact',
+            params={'start_date': '2025-01-01', 'end_date': '2025-01-31'},
+        )
+    app.dependency_overrides.clear()
+
+    assert r.status_code == 200
+    data = r.json()['data']
+    assert data['view_scope'] == 'branch'
+    assert [section['branch']['title'] for section in data['branch_sections']] == ['Salon 1', 'Salon 2']
+
+    groups_by_branch = {
+        section['branch']['title']: section['groups']
+        for section in data['branch_sections']
+    }
+    assert [group['title'] for group in groups_by_branch['Salon 1']] == ['Master 1']
+    assert groups_by_branch['Salon 1'][0]['category'] == 'barber'
+    assert [group['title'] for group in groups_by_branch['Salon 2']] == ['Admin 2']
+    assert groups_by_branch['Salon 2'][0]['category'] == 'administrator'
+
+
+@pytest.mark.asyncio
 async def test_admin_opz_attributes_to_creator(async_session):
     async_session.add(Group(id=1, title='G1'))
     async_session.add(Company(id=1, title='Salon', group_id=1))
@@ -1042,6 +1194,62 @@ async def test_services_sheet_csv_imports_extra_service_labels(async_session):
     assert sorted((row.service_id, row.company_id, row.is_extra) for row in rows) == [
         (11, 1, True),
         (12, 2, True),
+    ]
+
+
+def test_google_sheet_page_url_is_normalized_to_csv_export():
+    url = 'https://docs.google.com/spreadsheets/d/sheet-id/edit#gid=12345'
+
+    assert _normalize_google_sheet_csv_url(url) == (
+        'https://docs.google.com/spreadsheets/d/sheet-id/export?format=csv&gid=12345'
+    )
+
+
+@pytest.mark.asyncio
+async def test_services_sheet_csv_imports_current_format_with_category_scope(async_session):
+    async_session.add(Group(id=1, title='G1'))
+    async_session.add(Group(id=2, title='G2'))
+    async_session.add(Company(id=1, title='Salon 1', group_id=1))
+    async_session.add(Company(id=2, title='Salon 2', group_id=2))
+    async_session.add(Service(id=10, title='Black Mask', category_title='Уход', company_id=1))
+    async_session.add(Service(id=11, title='Black Mask', category_title='Основные', company_id=2))
+    async_session.add(Service(id=12, title='Окантовка', category_title='Финиш', company_id=2))
+    await async_session.commit()
+
+    result = await import_services_sheet_csv(
+        async_session,
+        'Категория,id_услуги,Название услуги,доп услуга\n'
+        'Уход,,Black Mask,да\n'
+        'Финиш,12,Окантовка,да\n',
+    )
+
+    assert result['imported'] == 2
+    assert result['processed'] == 2
+    rows = (await async_session.execute(select(ServiceLabel))).scalars().all()
+    assert sorted((row.service_id, row.company_id, row.is_extra) for row in rows) == [
+        (10, 1, True),
+        (12, 2, True),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_services_sheet_csv_category_falls_back_when_service_categories_are_empty(async_session):
+    async_session.add(Group(id=1, title='G1'))
+    async_session.add(Company(id=1, title='Salon 1', group_id=1))
+    async_session.add(Service(id=10, title='Black Mask', category_title='', company_id=1))
+    await async_session.commit()
+
+    result = await import_services_sheet_csv(
+        async_session,
+        'Категория,id_услуги,Название услуги,доп услуга\n'
+        'Уход,,Black Mask,да\n',
+    )
+
+    assert result['imported'] == 1
+    assert result['processed'] == 1
+    rows = (await async_session.execute(select(ServiceLabel))).scalars().all()
+    assert [(row.service_id, row.company_id, row.is_extra) for row in rows] == [
+        (10, 1, True),
     ]
 
 
