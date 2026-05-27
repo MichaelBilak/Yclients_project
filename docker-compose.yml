@@ -70,8 +70,6 @@ services:
     restart: "no"
 
   metabase:
-    # Optional: internal BI only. Remove this service and nginx -> metabase proxy if you ship
-    # the product dashboard without Metabase (see README "Metabase").
     image: metabase/metabase:latest
     ports:
       - "127.0.0.1:3000:3000"

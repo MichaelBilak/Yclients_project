@@ -10,6 +10,8 @@ __pycache__/
 *.py[cod]
 logs/
 *.log
+# Local private docs and operational runbooks
+docs/private/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/

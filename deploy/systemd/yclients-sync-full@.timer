@@ -1,5 +1,5 @@
 [Unit]
-Description=Run YClients BI nightly full sync at 02:00
+Description=Run YClients BI scheduled full sync
 
 [Timer]
 OnCalendar=*-*-* 02:00:00

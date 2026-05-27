@@ -1,5 +1,5 @@
 [Unit]
-Description=Check GitHub for YClients BI deploys every 5 minutes
+Description=Periodic YClients BI deployment check
 
 [Timer]
 OnBootSec=2min

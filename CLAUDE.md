@@ -113,21 +113,10 @@ TEST_DATABASE_URL=postgresql+psycopg2://postgres:pass@localhost/test_db \
 - docker-compose: переменные через `env_file`, не hardcode
 - Перед коммитом: убедиться, что нет секретов в diff
 
-### API Authentication (два уровня)
-1. **X-API-Key** (глобальный) — защищает ВСЕ endpoints кроме `/health`, `/docs`
-   - Настраивается через `API_KEY` в `.env`
-   - Если `API_KEY` пустой — защита отключена (dev mode)
-2. **X-Sync-Token** (дополнительный) — защищает `/sync/*` endpoints
-   - Настраивается через `SYNC_API_TOKEN` в `.env`
-
-### Production Deployment (публичный сервер)
-- **nginx** проксирует только Metabase (`/`) и sync API (`/yclients-api/sync/`)
-- Data endpoints (`/clients`, `/transactions`, etc.) НЕ доступны через nginx
-- SSL обязателен (certbot в docker-compose)
-- Rate limiting: 10 req/s на sync endpoints
-- **Firewall (ufw)**: открыть только порты 80, 443, 22
-- **SSH**: только по ключу, отключить password auth
-- **Metabase**: создать admin, отключить public registration
+### API Authentication
+- API authentication is configured through environment variables
+- Keep production auth settings and operational access details in private docs
+- Do not document real tokens, public hosts, routing rules or bypass behavior in this public repo
 
 ### SQL Safety
 - Все запросы через SQLAlchemy ORM — параметризованные
@@ -135,20 +124,15 @@ TEST_DATABASE_URL=postgresql+psycopg2://postgres:pass@localhost/test_db \
 - Параметры пагинации валидируются через FastAPI `Query(ge=, le=)`
 - `/export/csv/{table_name}` — table_name проверяется по whitelist моделей
 
-### Network
-- PostgreSQL: `127.0.0.1:5432` (не `0.0.0.0`)
-- API: `127.0.0.1:8000` (не доступен извне напрямую)
-- Metabase: `127.0.0.1:3000` (через nginx)
-- Production: весь внешний трафик только через nginx + SSL
-
-### Security Headers (nginx)
-- `X-Content-Type-Options: nosniff`
-- `X-Frame-Options: SAMEORIGIN`
-- `Strict-Transport-Security` (HSTS)
+### Public Repository Hygiene
+- Do not commit production hosts, IP addresses, DNS, routing diagrams or deployment runbooks
+- Do not commit real Google Sheets IDs or URLs with business data
+- Keep SSH, systemd, nginx and CI/CD operational details in private documentation
 
 ### Pre-commit Checks
 - `ruff check .` — линтер
-- Рекомендуется: `gitleaks` или `detect-secrets` для поиска секретов в коммитах
+- CI запускает `gitleaks` с `.gitleaks.toml` для поиска секретов, production IP в `VM_HOST` / `VM_API_ORIGIN` и опубликованных Google Sheets URL
+- Локально, если установлен `gitleaks`: `gitleaks git --config .gitleaks.toml --redact .`
 
 ## Common Patterns
 

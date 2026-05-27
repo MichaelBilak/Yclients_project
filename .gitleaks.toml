@@ -1,0 +1,37 @@
+title = "YClients BI gitleaks config"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "yclients-vm-host-ip"
+description = "Detect committed VM host IPs in deployment examples"
+regex = '''(?i)\b(?:VM_HOST|VM_API_ORIGIN)\s*=\s*(?:https?://)?((?:[0-9]{1,3}\.){3}[0-9]{1,3})\b'''
+secretGroup = 1
+keywords = [
+  "VM_HOST",
+  "VM_API_ORIGIN",
+]
+
+  [[rules.allowlists]]
+  description = "Allow local, private, and documentation IP ranges"
+  regexTarget = "secret"
+  regexes = [
+    '''^0\.0\.0\.0$''',
+    '''^10\.''',
+    '''^127\.''',
+    '''^172\.(1[6-9]|2[0-9]|3[0-1])\.''',
+    '''^192\.168\.''',
+    '''^192\.0\.2\.''',
+    '''^198\.51\.100\.''',
+    '''^203\.0\.113\.''',
+  ]
+
+[[rules]]
+id = "google-sheets-published-url"
+description = "Detect committed Google Sheets document IDs in import URLs"
+regex = '''https://docs\.google\.com/spreadsheets/d/([A-Za-z0-9_-]{20,})/'''
+secretGroup = 1
+keywords = [
+  "docs.google.com/spreadsheets/d",
+]
