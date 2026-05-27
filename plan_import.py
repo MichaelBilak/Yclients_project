@@ -34,6 +34,7 @@ from config import (
 )
 from models import Company, PlanMetric, Service, ServiceLabel, Staff
 from plan_config import (
+    PLAN_FACT_METRICS,
     RAW_PLAN_FACT_CODES,
     STAFF_CATEGORY_METRIC_CODES,
     normalize_staff_category,
@@ -56,6 +57,7 @@ METRIC_COLUMN_ALIASES = {
 }
 
 RETIRED_PLAN_METRIC_CODES = {'reviews_qty'}
+PLAN_FACT_METRIC_CODES = {metric['code'] for metric in PLAN_FACT_METRICS}
 
 PERIOD_START_ALIASES = ('period_start', 'date_from', 'start_date', 'начало периода', 'с')
 PERIOD_END_ALIASES = ('period_end', 'date_to', 'end_date', 'конец периода', 'по')
@@ -255,7 +257,7 @@ async def _save_plan_values(
     await db.execute(
         delete(PlanMetric).where(
             *_branch_or_staff_filter(period_start, period_end, company_id, staff_id),
-            PlanMetric.metric_code.in_(list(set(metric_codes) | RETIRED_PLAN_METRIC_CODES)),
+            PlanMetric.metric_code.in_(list(PLAN_FACT_METRIC_CODES | RETIRED_PLAN_METRIC_CODES)),
         )
     )
 
@@ -278,54 +280,81 @@ async def _save_plan_values(
     return imported
 
 
-async def _derive_missing_branch_plans(
-    db: AsyncSession,
-    parsed_rows: list[ParsedPlanRow],
-    *,
-    source: str,
-    updated_at: datetime,
-) -> int:
-    branch_keys = {
-        (row.period_start, row.period_end, row.company_id)
-        for row in parsed_rows
-        if row.scope == 'branch' and row.company_id is not None
-    }
-    staff_by_branch: dict[tuple[date, date, int], list[ParsedPlanRow]] = {}
+def _effective_import_rows(parsed_rows: list[ParsedPlanRow]) -> list[ParsedPlanRow]:
+    """Build the persisted sheet snapshot: last row wins, branch plans mirror staff sums."""
+    rows_by_key: dict[tuple[date, date, int, int | None], ParsedPlanRow] = {}
     for row in parsed_rows:
+        if row.scope == 'network' or row.company_id is None:
+            continue
+        rows_by_key[(row.period_start, row.period_end, row.company_id, row.staff_id)] = row
+
+    staff_by_branch: dict[tuple[date, date, int], list[ParsedPlanRow]] = {}
+    for row in rows_by_key.values():
         if row.scope == 'staff' and row.company_id is not None:
             staff_by_branch.setdefault((row.period_start, row.period_end, row.company_id), []).append(row)
 
-    imported = 0
     for key, rows in staff_by_branch.items():
-        if key in branch_keys:
-            continue
         period_start, period_end, company_id = key
         metric_codes = _metric_codes(rows) & RAW_PLAN_FACT_CODES
         values = _sum_values(rows)
-        imported += await _save_plan_values(
-            db,
+        if not values:
+            continue
+        rows_by_key[(period_start, period_end, company_id, None)] = ParsedPlanRow(
+            row_index=0,
             period_start=period_start,
             period_end=period_end,
             company_id=company_id,
             staff_id=None,
             staff_category=None,
-            metric_codes=metric_codes,
             values=values,
-            source=f'{source}:staff_sum',
-            updated_at=updated_at,
+            metric_codes=frozenset(metric_codes),
+            scope='branch',
         )
-        parsed_rows.append(
-            ParsedPlanRow(
-                row_index=0,
-                period_start=period_start,
-                period_end=period_end,
-                company_id=company_id,
-                staff_id=None,
-                staff_category=None,
-                values=values,
-                metric_codes=frozenset(metric_codes),
-                scope='branch',
+
+    return list(rows_by_key.values())
+
+
+async def _replace_plan_values(
+    db: AsyncSession,
+    effective_rows: list[ParsedPlanRow],
+    *,
+    source: str,
+    updated_at: datetime,
+) -> int:
+    if not effective_rows:
+        return 0
+
+    period_company_keys = {
+        (row.period_start, row.period_end, row.company_id)
+        for row in effective_rows
+        if row.company_id is not None
+    }
+    for period_start, period_end, company_id in period_company_keys:
+        await db.execute(
+            delete(PlanMetric).where(
+                PlanMetric.period_start == period_start,
+                PlanMetric.period_end == period_end,
+                PlanMetric.company_id == company_id,
+                PlanMetric.metric_code.in_(list(PLAN_FACT_METRIC_CODES | RETIRED_PLAN_METRIC_CODES)),
             )
+        )
+
+    imported = 0
+    for row in effective_rows:
+        if row.company_id is None:
+            continue
+        row_source = f'{source}:staff_sum' if row.scope == 'branch' and row.row_index == 0 else source
+        imported += await _save_plan_values(
+            db,
+            period_start=row.period_start,
+            period_end=row.period_end,
+            company_id=row.company_id,
+            staff_id=row.staff_id,
+            staff_category=row.staff_category,
+            metric_codes=row.metric_codes,
+            values=row.values,
+            source=row_source,
+            updated_at=updated_at,
         )
     return imported
 
@@ -333,14 +362,15 @@ async def _derive_missing_branch_plans(
 def _validate_plan_totals(parsed_rows: list[ParsedPlanRow]) -> list[str]:
     warnings: list[str] = []
 
-    branch_rows = [row for row in parsed_rows if row.scope == 'branch']
-    staff_rows = [row for row in parsed_rows if row.scope == 'staff']
+    effective_rows = _effective_import_rows(parsed_rows)
+    branch_rows = [row for row in effective_rows if row.scope == 'branch']
+    staff_rows = [row for row in effective_rows if row.scope == 'staff']
     network_rows = [row for row in parsed_rows if row.scope == 'network']
 
     branch_by_key = {
         (row.period_start, row.period_end, row.company_id): row
-        for row in branch_rows
-        if row.company_id is not None
+        for row in parsed_rows
+        if row.scope == 'branch' and row.row_index > 0 and row.company_id is not None
     }
     staff_by_branch: dict[tuple[date, date, int], list[ParsedPlanRow]] = {}
     for row in staff_rows:
@@ -350,6 +380,8 @@ def _validate_plan_totals(parsed_rows: list[ParsedPlanRow]) -> list[str]:
 
     for key, rows in staff_by_branch.items():
         branch = branch_by_key.get(key)
+        if branch is None:
+            continue
         branch_values = branch.values if branch else {}
         staff_values = _sum_values(rows)
         for metric_code, staff_value in staff_values.items():
@@ -514,7 +546,6 @@ async def import_plan_sheet_csv(db: AsyncSession, csv_text: str, source: str = '
 
     reader = csv.DictReader(io.StringIO(csv_text))
     now = datetime.utcnow()
-    imported = 0
     skipped: list[str] = []
     warnings: list[str] = []
     parsed_rows: list[ParsedPlanRow] = []
@@ -609,23 +640,8 @@ async def import_plan_sheet_csv(db: AsyncSession, csv_text: str, source: str = '
         )
         parsed_rows.append(parsed_row)
 
-        if scope == 'network':
-            continue
-
-        imported += await _save_plan_values(
-            db,
-            period_start=period_start,
-            period_end=period_end,
-            company_id=company_id,
-            staff_id=staff_id,
-            staff_category=staff_category,
-            metric_codes=row_metric_codes,
-            values=values,
-            source=source,
-            updated_at=now,
-        )
-
-    imported += await _derive_missing_branch_plans(db, parsed_rows, source=source, updated_at=now)
+    effective_rows = _effective_import_rows(parsed_rows)
+    imported = await _replace_plan_values(db, effective_rows, source=source, updated_at=now)
     await db.commit()
     warnings.extend(_validate_plan_totals(parsed_rows))
     return {'imported': imported, 'skipped': skipped, 'warnings': warnings}

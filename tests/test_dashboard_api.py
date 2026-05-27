@@ -9,6 +9,7 @@ from sqlalchemy import select
 
 import api
 import plan_import
+from dashboard_service import fetch_plan_fact
 from plan_import import (
     import_plan_sheet_csv,
     import_services_sheet_csv,
@@ -1040,7 +1041,7 @@ async def test_plan_fact_excludes_fired_staff(async_session):
 
     assert r.status_code == 200
     groups = r.json()['data']['groups']
-    assert [group['title'] for group in groups] == ['Active']
+    assert [group['title'] for group in groups] == ['Active', 'Zero Plan']
 
 
 @pytest.mark.asyncio
@@ -1438,6 +1439,19 @@ async def test_plan_sheet_csv_imports_staff_rows_and_validates_branch_totals(asy
     assert values == {'revenue': 8000.0, 'clients': 4.0, 'wax_qty': 2.0}
     assert {row.staff_category for row in rows} == {'barber'}
 
+    branch_rows = (
+        await async_session.execute(
+            select(PlanMetric).where(
+                PlanMetric.period_start == date(2025, 1, 1),
+                PlanMetric.period_end == date(2025, 1, 31),
+                PlanMetric.company_id == 1,
+                PlanMetric.staff_id.is_(None),
+            )
+        )
+    ).scalars().all()
+    branch_values = {row.metric_code: row.value for row in branch_rows}
+    assert branch_values == {'revenue': 8000.0, 'clients': 4.0, 'wax_qty': 2.0}
+
 
 @pytest.mark.asyncio
 async def test_plan_sheet_csv_imports_flat_staff_rows_and_derives_branch_plan(async_session):
@@ -1490,6 +1504,66 @@ async def test_plan_sheet_csv_imports_flat_staff_rows_and_derives_branch_plan(as
     assert values[(None, 'revenue')] == 10000.0
     assert values[(None, 'clients')] == 10.0
     assert values[(None, 'cosmo_sum')] == 1500.0
+
+
+@pytest.mark.asyncio
+async def test_plan_sheet_csv_replaces_duplicate_staff_month_with_latest_row(async_session):
+    async_session.add(Group(id=1, title='G1'))
+    async_session.add(Company(id=1, title='Salon', group_id=1))
+    async_session.add(Staff(id=10, name='Alice', position='Барбер', company_id=1))
+    async_session.add_all([
+        PlanMetric(
+            period_start=date(2025, 1, 1),
+            period_end=date(2025, 1, 31),
+            company_id=1,
+            staff_id=10,
+            staff_category='barber',
+            metric_code='wax_qty',
+            value=9.0,
+            updated_at=datetime(2025, 1, 1),
+        ),
+        PlanMetric(
+            period_start=date(2025, 1, 1),
+            period_end=date(2025, 1, 31),
+            company_id=1,
+            metric_code='avg_check_total',
+            value=9999.0,
+            updated_at=datetime(2025, 1, 1),
+        ),
+    ])
+    await async_session.commit()
+
+    result = await import_plan_sheet_csv(
+        async_session,
+        'month,company_id,staff_id,position,выручка,кол-во клиентов,воск\n'
+        '2025-01,1,10,Барбер,8000,4,1\n'
+        '2025-01,1,10,Барбер,9000,3,\n',
+    )
+
+    assert result['imported'] == 4
+    rows = (
+        await async_session.execute(
+            select(PlanMetric).where(
+                PlanMetric.period_start == date(2025, 1, 1),
+                PlanMetric.period_end == date(2025, 1, 31),
+                PlanMetric.company_id == 1,
+            )
+        )
+    ).scalars().all()
+    values = {
+        (row.staff_id, row.metric_code): row.value
+        for row in rows
+    }
+    assert values == {
+        (10, 'revenue'): 9000.0,
+        (10, 'clients'): 3.0,
+        (None, 'revenue'): 9000.0,
+        (None, 'clients'): 3.0,
+    }
+
+    plan_fact = await fetch_plan_fact(async_session, date(2025, 1, 1), date(2025, 1, 31), company_id=1)
+    branch_cells = {cell['code']: cell for cell in plan_fact['parent_group']['metrics']}
+    assert branch_cells['avg_check_total']['plan'] == 3000.0
 
 
 @pytest.mark.asyncio

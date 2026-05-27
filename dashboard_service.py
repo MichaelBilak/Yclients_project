@@ -1072,8 +1072,8 @@ def _metric_cells(
     return cells
 
 
-def _has_nonzero_plan(plan_values: dict[str, float]) -> bool:
-    return any(abs(float(value or 0.0)) > 1e-9 for value in plan_values.values())
+def _has_plan_values(plan_values: dict[str, float]) -> bool:
+    return bool(plan_values)
 
 
 def _metric_sets_payload() -> dict[str, list[dict[str, str]]]:
@@ -1136,7 +1136,7 @@ async def _staff_plan_groups_for_branch(
     )
     staff_rows = [
         staff for staff in staff_rows
-        if _has_nonzero_plan(plans_by_staff.get(int(staff.id), {}))
+        if _has_plan_values(plans_by_staff.get(int(staff.id), {}))
     ]
     staff_ids = [int(row.id) for row in staff_rows]
     categories_by_staff_id: dict[int, str] = {}
