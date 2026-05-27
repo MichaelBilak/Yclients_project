@@ -72,6 +72,7 @@ SYNC_FULL_REFRESH_HOUR = _get_int('SYNC_FULL_REFRESH_HOUR', 2)
 SYNC_LOCK_ID = _get_int('SYNC_LOCK_ID', 826451)
 SYNC_API_TOKEN = os.getenv('SYNC_API_TOKEN', '')
 SYNC_WORKER_POLL_INTERVAL = _get_float('SYNC_WORKER_POLL_INTERVAL', 5.0)
+SERVICES_LABEL_SYNC_INTERVAL_DAYS = _get_int('SERVICES_LABEL_SYNC_INTERVAL_DAYS', 7)
 
 # ============================================================================
 # API runtime
@@ -86,9 +87,16 @@ DASHBOARD_CORS_ORIGIN_REGEX = os.getenv('DASHBOARD_CORS_ORIGIN_REGEX', '')
 
 # Published Google Sheets CSV URL with branch plan values for /dashboard/widget/plan_fact.
 PLAN_SHEET_CSV_URL = os.getenv('PLAN_SHEET_CSV_URL', '')
+# Service-account fallback for the plan sheet when PLAN_SHEET_CSV_URL is empty or private.
+PLAN_SHEET_ID = os.getenv('PLAN_SHEET_ID', '')
+PLAN_SHEET_NAME = os.getenv('PLAN_SHEET_NAME', 'plan')
 # Optional published CSV URL for the services labels sheet. If empty, the importer
 # tries to read sheet=services from the same spreadsheet as PLAN_SHEET_CSV_URL.
 SERVICES_SHEET_CSV_URL = os.getenv('SERVICES_SHEET_CSV_URL', '')
+GOOGLE_SERVICE_ACCOUNT_FILE = os.getenv('GOOGLE_SERVICE_ACCOUNT_FILE', '')
+GOOGLE_SERVICE_ACCOUNT_JSON_B64 = os.getenv('GOOGLE_SERVICE_ACCOUNT_JSON_B64', '')
+SERVICES_SHEET_ID = os.getenv('SERVICES_SHEET_ID', '')
+SERVICES_SHEET_NAME = os.getenv('SERVICES_SHEET_NAME', 'services')
 
 # ============================================================================
 # Уведомления

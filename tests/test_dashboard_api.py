@@ -1,5 +1,6 @@
 """Dashboard JSON API (product portal metrics)."""
 
+import csv
 from datetime import date, datetime
 
 import pytest
@@ -7,7 +8,14 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 import api
-from plan_import import import_plan_sheet_csv, import_services_sheet_csv, _normalize_google_sheet_csv_url
+import plan_import
+from plan_import import (
+    import_plan_sheet_csv,
+    import_services_sheet_csv,
+    _google_sheet_values_to_csv_text,
+    _normalize_google_sheet_csv_url,
+    _spreadsheet_id_from_url,
+)
 from api import app
 from models import (
     Appointment,
@@ -1205,6 +1213,34 @@ def test_google_sheet_page_url_is_normalized_to_csv_export():
     )
 
 
+def test_spreadsheet_id_is_extracted_from_google_sheet_url():
+    url = 'https://docs.google.com/spreadsheets/d/sheet-id/edit#gid=12345'
+
+    assert _spreadsheet_id_from_url(url) == 'sheet-id'
+
+
+def test_google_sheet_values_are_converted_to_csv_text():
+    csv_text = _google_sheet_values_to_csv_text([
+        ['Категория', 'id_услуги', 'Название услуги', 'доп услуга'],
+        ['Уход', 10, 'Black Mask', 'да'],
+    ])
+
+    rows = list(csv.DictReader(csv_text.splitlines()))
+    assert rows == [{
+        'Категория': 'Уход',
+        'id_услуги': '10',
+        'Название услуги': 'Black Mask',
+        'доп услуга': 'да',
+    }]
+
+
+def test_service_account_sheet_read_reports_generic_missing_sheet_id(monkeypatch):
+    monkeypatch.setattr(plan_import, '_service_account_info', lambda: {'private_key': 'unused'})
+
+    with pytest.raises(ValueError, match='Google sheet id is not configured'):
+        plan_import._sheet_csv_text_from_service_account('', 'plan')
+
+
 @pytest.mark.asyncio
 async def test_services_sheet_csv_imports_current_format_with_category_scope(async_session):
     async_session.add(Group(id=1, title='G1'))
@@ -1251,6 +1287,125 @@ async def test_services_sheet_csv_category_falls_back_when_service_categories_ar
     assert [(row.service_id, row.company_id, row.is_extra) for row in rows] == [
         (10, 1, True),
     ]
+
+
+@pytest.mark.asyncio
+async def test_services_sheet_config_import_falls_back_to_service_account(async_session, monkeypatch):
+    async_session.add(Group(id=1, title='G1'))
+    async_session.add(Company(id=1, title='Salon 1', group_id=1))
+    async_session.add(Service(id=10, title='Black Mask', category_title='Уход', company_id=1))
+    await async_session.commit()
+
+    def fail_csv_url(url):
+        raise RuntimeError('401')
+
+    def fake_service_account_sheet(sheet_id, sheet_name):
+        assert sheet_id == 'sheet-id'
+        assert sheet_name == 'services'
+        return (
+            'Категория,id_услуги,Название услуги,доп услуга\n'
+            'Уход,10,Black Mask,да\n'
+        )
+
+    monkeypatch.setattr(
+        plan_import,
+        'SERVICES_SHEET_CSV_URL',
+        'https://docs.google.com/spreadsheets/d/sheet-id/export?format=csv&gid=12345',
+    )
+    monkeypatch.setattr(plan_import, 'PLAN_SHEET_CSV_URL', '')
+    monkeypatch.setattr(plan_import, 'SERVICES_SHEET_ID', '')
+    monkeypatch.setattr(plan_import, 'SERVICES_SHEET_NAME', 'services')
+    monkeypatch.setattr(plan_import, '_csv_text_from_url', fail_csv_url)
+    monkeypatch.setattr(plan_import, '_sheet_csv_text_from_service_account', fake_service_account_sheet)
+
+    result = await plan_import.import_services_sheet_from_config(async_session)
+
+    assert result['imported'] == 1
+    assert result['processed'] == 1
+    rows = (await async_session.execute(select(ServiceLabel))).scalars().all()
+    assert [(row.service_id, row.company_id, row.is_extra) for row in rows] == [
+        (10, 1, True),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_services_sheet_config_import_uses_plan_sheet_id_for_service_account(async_session, monkeypatch):
+    async_session.add(Group(id=1, title='G1'))
+    async_session.add(Company(id=1, title='Salon 1', group_id=1))
+    async_session.add(Service(id=10, title='Black Mask', category_title='Уход', company_id=1))
+    await async_session.commit()
+
+    def fake_service_account_sheet(sheet_id, sheet_name):
+        assert sheet_id == 'plan-sheet-id'
+        assert sheet_name == 'services'
+        return (
+            'Категория,id_услуги,Название услуги,доп услуга\n'
+            'Уход,10,Black Mask,да\n'
+        )
+
+    monkeypatch.setattr(plan_import, 'SERVICES_SHEET_CSV_URL', '')
+    monkeypatch.setattr(plan_import, 'PLAN_SHEET_CSV_URL', '')
+    monkeypatch.setattr(plan_import, 'PLAN_SHEET_ID', 'plan-sheet-id')
+    monkeypatch.setattr(plan_import, 'SERVICES_SHEET_ID', '')
+    monkeypatch.setattr(plan_import, 'SERVICES_SHEET_NAME', 'services')
+    monkeypatch.setattr(plan_import, '_sheet_csv_text_from_service_account', fake_service_account_sheet)
+
+    result = await plan_import.import_services_sheet_from_config(async_session)
+
+    assert result['imported'] == 1
+    assert result['processed'] == 1
+    rows = (await async_session.execute(select(ServiceLabel))).scalars().all()
+    assert [(row.service_id, row.company_id, row.is_extra) for row in rows] == [
+        (10, 1, True),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_plan_sheet_config_import_falls_back_to_service_account(async_session, monkeypatch):
+    async_session.add(Group(id=1, title='G1'))
+    async_session.add(Company(id=1, title='Salon 1', group_id=1))
+    async_session.add(Staff(id=10, name='Alice', position='Барбер', company_id=1))
+    await async_session.commit()
+
+    def fail_csv_url(url):
+        raise RuntimeError('401')
+
+    def fake_service_account_sheet(sheet_id, sheet_name):
+        assert sheet_id == 'sheet-id'
+        if sheet_name == 'plan':
+            return (
+                'month,company_id,branch,staff_id,position,Выручка,Кол-во клиентов,"Воск, шт"\n'
+                '2025-01,1,Salon 1,10,Барбер,8000,4,2\n'
+            )
+        return 'Категория,id_услуги,Название услуги,доп услуга\n'
+
+    monkeypatch.setattr(
+        plan_import,
+        'PLAN_SHEET_CSV_URL',
+        'https://docs.google.com/spreadsheets/d/sheet-id/export?format=csv&gid=0',
+    )
+    monkeypatch.setattr(plan_import, 'PLAN_SHEET_ID', '')
+    monkeypatch.setattr(plan_import, 'PLAN_SHEET_NAME', 'plan')
+    monkeypatch.setattr(plan_import, 'SERVICES_SHEET_CSV_URL', '')
+    monkeypatch.setattr(plan_import, 'SERVICES_SHEET_ID', '')
+    monkeypatch.setattr(plan_import, 'SERVICES_SHEET_NAME', 'services')
+    monkeypatch.setattr(plan_import, '_csv_text_from_url', fail_csv_url)
+    monkeypatch.setattr(plan_import, '_sheet_csv_text_from_service_account', fake_service_account_sheet)
+
+    result = await plan_import.import_plan_sheet_from_config(async_session)
+
+    # staff row (3 metrics) + derived branch plan (3 metrics)
+    assert result['imported'] == 6
+    rows = (
+        await async_session.execute(
+            select(PlanMetric).where(
+                PlanMetric.company_id == 1,
+                PlanMetric.staff_id == 10,
+            )
+        )
+    ).scalars().all()
+    values = {row.metric_code: row.value for row in rows}
+    assert values == {'revenue': 8000.0, 'clients': 4.0, 'wax_qty': 2.0}
 
 
 @pytest.mark.asyncio

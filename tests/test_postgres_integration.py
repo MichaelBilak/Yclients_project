@@ -82,6 +82,7 @@ def test_worker_processes_queued_job(pg_session_factory, monkeypatch):
 
     monkeypatch.setattr(sync_worker, 'init_database', lambda *args, **kwargs: BoundDatabase(pg_session_factory))
     monkeypatch.setattr(sync_worker, 'run_sync_job', lambda **kwargs: {'status': 'success', 'run_id': 77})
+    monkeypatch.setattr(sync_worker, 'run_services_label_sync_if_due', lambda db: {'status': 'skipped'})
 
     assert sync_worker.process_next_job() is True
 

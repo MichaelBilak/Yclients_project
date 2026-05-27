@@ -5,7 +5,13 @@ from __future__ import annotations
 import csv
 import io
 import asyncio
+import base64
+import json
+import os
 import re
+import subprocess
+import tempfile
+import time
 import urllib.parse
 import urllib.request
 from calendar import monthrange
@@ -16,7 +22,16 @@ from typing import Any
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from config import PLAN_SHEET_CSV_URL, SERVICES_SHEET_CSV_URL
+from config import (
+    GOOGLE_SERVICE_ACCOUNT_FILE,
+    GOOGLE_SERVICE_ACCOUNT_JSON_B64,
+    PLAN_SHEET_CSV_URL,
+    PLAN_SHEET_ID,
+    PLAN_SHEET_NAME,
+    SERVICES_SHEET_CSV_URL,
+    SERVICES_SHEET_ID,
+    SERVICES_SHEET_NAME,
+)
 from models import Company, PlanMetric, Service, ServiceLabel, Staff
 from plan_config import (
     RAW_PLAN_FACT_CODES,
@@ -84,6 +99,8 @@ FALSE_MARKERS = {
     'base',
     '-',
 }
+GOOGLE_SHEETS_READONLY_SCOPE = 'https://www.googleapis.com/auth/spreadsheets.readonly'
+GOOGLE_OAUTH_TOKEN_URI = 'https://oauth2.googleapis.com/token'
 
 
 @dataclass(frozen=True)
@@ -378,6 +395,97 @@ def _normalize_google_sheet_csv_url(url: str) -> str:
     return f'https://docs.google.com/spreadsheets/d/{spreadsheet_id}/export?{export_query}'
 
 
+def _spreadsheet_id_from_url(url: str) -> str:
+    match = re.search(r'/spreadsheets/d/([^/]+)', str(url or ''))
+    return match.group(1) if match else ''
+
+
+def _service_account_info() -> dict[str, Any] | None:
+    if GOOGLE_SERVICE_ACCOUNT_JSON_B64:
+        payload = base64.b64decode(GOOGLE_SERVICE_ACCOUNT_JSON_B64).decode('utf-8')
+        return json.loads(payload)
+    if GOOGLE_SERVICE_ACCOUNT_FILE:
+        with open(GOOGLE_SERVICE_ACCOUNT_FILE, encoding='utf-8') as file_obj:
+            return json.load(file_obj)
+    return None
+
+
+def _base64url(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b'=').decode('ascii')
+
+
+def _google_service_account_access_token(service_account: dict[str, Any]) -> str:
+    now = int(time.time())
+    token_uri = service_account.get('token_uri') or GOOGLE_OAUTH_TOKEN_URI
+    header = {'alg': 'RS256', 'typ': 'JWT'}
+    claims = {
+        'iss': service_account['client_email'],
+        'scope': GOOGLE_SHEETS_READONLY_SCOPE,
+        'aud': token_uri,
+        'iat': now,
+        'exp': now + 3600,
+    }
+    signing_input = (
+        _base64url(json.dumps(header, separators=(',', ':')).encode('utf-8'))
+        + '.'
+        + _base64url(json.dumps(claims, separators=(',', ':')).encode('utf-8'))
+    ).encode('ascii')
+
+    key_file_path = ''
+    try:
+        with tempfile.NamedTemporaryFile('w', delete=False) as key_file:
+            key_file.write(service_account['private_key'])
+            key_file_path = key_file.name
+        os.chmod(key_file_path, 0o600)
+        signature = subprocess.check_output(
+            ['openssl', 'dgst', '-sha256', '-sign', key_file_path],
+            input=signing_input,
+        )
+    finally:
+        if key_file_path:
+            try:
+                os.unlink(key_file_path)
+            except FileNotFoundError:
+                pass
+
+    assertion = signing_input.decode('ascii') + '.' + _base64url(signature)
+    body = urllib.parse.urlencode({
+        'grant_type': 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+        'assertion': assertion,
+    }).encode('utf-8')
+    request = urllib.request.Request(token_uri, data=body, method='POST')
+    with urllib.request.urlopen(request, timeout=30) as response:
+        token_data = json.loads(response.read().decode('utf-8'))
+    return token_data['access_token']
+
+
+def _google_sheet_values_to_csv_text(values: list[list[Any]]) -> str:
+    out = io.StringIO()
+    writer = csv.writer(out)
+    for row in values:
+        writer.writerow([str(value) if value is not None else '' for value in row])
+    return out.getvalue()
+
+
+def _sheet_csv_text_from_service_account(sheet_id: str, sheet_name: str) -> str:
+    service_account = _service_account_info()
+    if not service_account:
+        raise ValueError('Google service account is not configured')
+    if not sheet_id:
+        raise ValueError('Google sheet id is not configured')
+    sheet_name = sheet_name or 'services'
+    access_token = _google_service_account_access_token(service_account)
+    range_name = urllib.parse.quote(sheet_name, safe='')
+    url = (
+        f'https://sheets.googleapis.com/v4/spreadsheets/{sheet_id}/values/'
+        f'{range_name}?majorDimension=ROWS'
+    )
+    request = urllib.request.Request(url, headers={'Authorization': f'Bearer {access_token}'})
+    with urllib.request.urlopen(request, timeout=30) as response:
+        payload = json.loads(response.read().decode('utf-8'))
+    return _google_sheet_values_to_csv_text(payload.get('values') or [])
+
+
 def _sheet_csv_url_from_spreadsheet_url(url: str, sheet_name: str) -> str:
     match = re.search(r'/spreadsheets/d/([^/]+)', url or '')
     if not match:
@@ -629,25 +737,67 @@ async def import_services_sheet_from_config(db: AsyncSession) -> dict[str, Any]:
         PLAN_SHEET_CSV_URL,
         'services',
     )
-    if not services_url:
-        return {'imported': 0, 'processed': 0, 'skipped': ['services sheet CSV URL is not configured'], 'warnings': []}
+    sheet_id = (
+        SERVICES_SHEET_ID
+        or _spreadsheet_id_from_url(services_url)
+        or PLAN_SHEET_ID
+        or _spreadsheet_id_from_url(PLAN_SHEET_CSV_URL)
+    )
+    csv_error = None
+
+    if services_url:
+        try:
+            csv_text = await asyncio.to_thread(_csv_text_from_url, services_url)
+        except Exception as exc:
+            csv_error = exc
+        else:
+            return await import_services_sheet_csv(db, csv_text, source='google_sheet:services')
 
     try:
-        csv_text = await asyncio.to_thread(_csv_text_from_url, services_url)
+        csv_text = await asyncio.to_thread(
+            _sheet_csv_text_from_service_account,
+            sheet_id,
+            SERVICES_SHEET_NAME or 'services',
+        )
     except Exception as exc:
-        return {
-            'imported': 0,
-            'processed': 0,
-            'skipped': [f'services sheet is unavailable: {exc}'],
-            'warnings': [],
-        }
+        skipped = []
+        if not services_url and not sheet_id:
+            skipped.append('services sheet CSV URL, SERVICES_SHEET_ID or PLAN_SHEET_ID is not configured')
+        if csv_error is not None:
+            skipped.append(f'services sheet CSV URL is unavailable: {csv_error}')
+        skipped.append(f'services sheet service account read failed: {exc}')
+        return {'imported': 0, 'processed': 0, 'skipped': skipped, 'warnings': []}
+
     return await import_services_sheet_csv(db, csv_text, source='google_sheet:services')
 
 
 async def import_plan_sheet_from_config(db: AsyncSession) -> dict[str, Any]:
-    if not PLAN_SHEET_CSV_URL:
-        return {'imported': 0, 'skipped': ['PLAN_SHEET_CSV_URL is not configured']}
-    csv_text = await asyncio.to_thread(_csv_text_from_url, PLAN_SHEET_CSV_URL)
+    sheet_id = PLAN_SHEET_ID or _spreadsheet_id_from_url(PLAN_SHEET_CSV_URL)
+    csv_error = None
+
+    csv_text = None
+    if PLAN_SHEET_CSV_URL:
+        try:
+            csv_text = await asyncio.to_thread(_csv_text_from_url, PLAN_SHEET_CSV_URL)
+        except Exception as exc:
+            csv_error = exc
+
+    if csv_text is None:
+        try:
+            csv_text = await asyncio.to_thread(
+                _sheet_csv_text_from_service_account,
+                sheet_id,
+                PLAN_SHEET_NAME or 'plan',
+            )
+        except Exception as exc:
+            skipped = []
+            if not PLAN_SHEET_CSV_URL and not sheet_id:
+                skipped.append('PLAN_SHEET_CSV_URL or PLAN_SHEET_ID is not configured')
+            if csv_error is not None:
+                skipped.append(f'plan sheet CSV URL is unavailable: {csv_error}')
+            skipped.append(f'plan sheet service account read failed: {exc}')
+            return {'imported': 0, 'skipped': skipped}
+
     result = await import_plan_sheet_csv(db, csv_text, source='google_sheet')
     result['services'] = await import_services_sheet_from_config(db)
     return result

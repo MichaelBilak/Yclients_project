@@ -1,6 +1,9 @@
 .env
 .env.local
 .env.*.local
+# Local Google service account keys
+Silver Stratum Plan Reader.json
+secrets/*.json
 .venv/
 venv/
 __pycache__/
