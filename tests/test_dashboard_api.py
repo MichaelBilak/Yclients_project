@@ -906,21 +906,31 @@ async def test_dashboard_plan_fact_lists_staff_plans_for_each_branch(async_sessi
             '/dashboard/widget/plan_fact',
             params={'start_date': '2025-01-01', 'end_date': '2025-01-31'},
         )
+        r_company1 = await client.get(
+            '/dashboard/widget/plan_fact',
+            params={'start_date': '2025-01-01', 'end_date': '2025-01-31', 'company_id': 1},
+        )
+        r_company2 = await client.get(
+            '/dashboard/widget/plan_fact',
+            params={'start_date': '2025-01-01', 'end_date': '2025-01-31', 'company_id': 2},
+        )
     app.dependency_overrides.clear()
 
     assert r.status_code == 200
     data = r.json()['data']
     assert data['view_scope'] == 'branch'
-    assert [section['branch']['title'] for section in data['branch_sections']] == ['Salon 1', 'Salon 2']
+    assert 'branch_sections' not in data
+    assert [group['title'] for group in data['groups']] == ['Сеть', 'Salon 1', 'Salon 2']
 
-    groups_by_branch = {
-        section['branch']['title']: section['groups']
-        for section in data['branch_sections']
-    }
-    assert [group['title'] for group in groups_by_branch['Salon 1']] == ['Master 1']
-    assert groups_by_branch['Salon 1'][0]['category'] == 'barber'
-    assert [group['title'] for group in groups_by_branch['Salon 2']] == ['Admin 2']
-    assert groups_by_branch['Salon 2'][0]['category'] == 'administrator'
+    assert r_company1.status_code == 200
+    company1_groups = r_company1.json()['data']['groups']
+    assert [group['title'] for group in company1_groups] == ['Master 1']
+    assert company1_groups[0]['category'] == 'barber'
+
+    assert r_company2.status_code == 200
+    company2_groups = r_company2.json()['data']['groups']
+    assert [group['title'] for group in company2_groups] == ['Admin 2']
+    assert company2_groups[0]['category'] == 'administrator'
 
 
 @pytest.mark.asyncio
@@ -991,6 +1001,94 @@ async def test_admin_opz_attributes_to_creator(async_session):
     barber_cells = {cell['code']: cell for cell in barber_group['metrics']}
     assert admin_cells['opz_qty']['fact'] == 1.0
     assert barber_cells['opz_qty']['fact'] == 1.0
+
+
+@pytest.mark.asyncio
+async def test_admin_fact_revenue_uses_created_records_and_goods_cost(async_session):
+    async_session.add(Group(id=1, title='G1'))
+    async_session.add(Company(id=1, title='Salon', group_id=1))
+    async_session.add(Staff(id=1, name='Barber', position='Барбер', company_id=1))
+    async_session.add(Staff(id=2, name='Admin', position='Администратор', company_id=1, user_id=500))
+    async_session.add(Client(id=1, name='C', company_id=1))
+    await async_session.flush()
+
+    async_session.add_all([
+        Appointment(
+            id=1,
+            company_id=1,
+            staff_id=1,
+            client_id=1,
+            date=date(2025, 1, 10),
+            datetime=datetime(2025, 1, 10, 12, 0, 0),
+            create_date=datetime(2025, 1, 5, 12, 0, 0),
+            seance_length=3600,
+            attendance=1,
+            created_user_id=500,
+        ),
+        FinancialTransaction(
+            id=1,
+            date=datetime(2025, 1, 10, 12, 0, 0),
+            amount=1000.0,
+            record_id=1,
+            visit_id=1,
+            sold_item_id=10,
+            sold_item_type='service',
+            master_id=1,
+            company_id=1,
+        ),
+        GoodTransaction(
+            id=1,
+            document_id=1,
+            type_id=1,
+            amount=-2.0,
+            cost=300.0,
+            master_id=2,
+            company_id=1,
+            date=datetime(2025, 1, 10, 12, 0, 0),
+        ),
+    ])
+
+    now = datetime(2025, 1, 1)
+    for code, value in {
+        'revenue': 1.0,
+        'clients': 1.0,
+        'cosmo_qty': 1.0,
+        'cosmo_sum': 1.0,
+    }.items():
+        async_session.add(
+            PlanMetric(
+                period_start=date(2025, 1, 1),
+                period_end=date(2025, 1, 31),
+                company_id=1,
+                staff_id=2,
+                staff_category='administrator',
+                metric_code=code,
+                value=value,
+                updated_at=now,
+            )
+        )
+    await async_session.commit()
+
+    async def override_db():
+        yield async_session
+
+    app.dependency_overrides[api.get_async_db] = override_db
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url='http://test') as client:
+        r = await client.get(
+            '/dashboard/widget/plan_fact',
+            params={'start_date': '2025-01-01', 'end_date': '2025-01-31', 'company_id': 1},
+        )
+    app.dependency_overrides.clear()
+
+    assert r.status_code == 200
+    admin_group = next(g for g in r.json()['data']['groups'] if g['category'] == 'administrator')
+    admin_cells = {cell['code']: cell for cell in admin_group['metrics']}
+    assert admin_cells['revenue']['fact'] == 1300.0
+    assert admin_cells['avg_check_total']['fact'] == 1300.0
+    assert admin_cells['clients']['fact'] == 1.0
+    assert admin_cells['cosmo_qty']['fact'] == 2.0
+    assert admin_cells['cosmo_sum']['fact'] == 300.0
 
 
 @pytest.mark.asyncio
@@ -1205,6 +1303,9 @@ async def test_plan_sheet_csv_imports_wide_branch_rows(async_session):
     )
 
     assert result['imported'] == 3
+    assert result['diagnostics']['parsed_rows'] == {'total': 1, 'network': 0, 'branch': 1, 'staff': 0}
+    assert result['diagnostics']['imported_metrics'] == {'total': 3, 'branch': 3, 'staff': 0}
+    assert 'plan sheet has no staff rows; staff plans will be empty' in result['warnings']
     rows = (
         await async_session.execute(
             select(PlanMetric).where(

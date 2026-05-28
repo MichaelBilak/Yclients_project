@@ -238,6 +238,44 @@ def _metric_codes(rows: list[ParsedPlanRow]) -> set[str]:
     return codes
 
 
+def _scope_count(rows: list[ParsedPlanRow], scope: str) -> int:
+    return sum(1 for row in rows if row.scope == scope)
+
+
+def _scope_metric_count(rows: list[ParsedPlanRow], scope: str) -> int:
+    return sum(len(row.values) for row in rows if row.scope == scope)
+
+
+def _plan_import_diagnostics(
+    parsed_rows: list[ParsedPlanRow],
+    effective_rows: list[ParsedPlanRow],
+    imported: int,
+) -> dict[str, Any]:
+    return {
+        'parsed_rows': {
+            'total': len(parsed_rows),
+            'network': _scope_count(parsed_rows, 'network'),
+            'branch': _scope_count(parsed_rows, 'branch'),
+            'staff': _scope_count(parsed_rows, 'staff'),
+        },
+        'effective_rows': {
+            'total': len(effective_rows),
+            'branch': _scope_count(effective_rows, 'branch'),
+            'staff': _scope_count(effective_rows, 'staff'),
+        },
+        'parsed_metrics': {
+            'network': _scope_metric_count(parsed_rows, 'network'),
+            'branch': _scope_metric_count(parsed_rows, 'branch'),
+            'staff': _scope_metric_count(parsed_rows, 'staff'),
+        },
+        'imported_metrics': {
+            'total': imported,
+            'branch': _scope_metric_count(effective_rows, 'branch'),
+            'staff': _scope_metric_count(effective_rows, 'staff'),
+        },
+    }
+
+
 async def _save_plan_values(
     db: AsyncSession,
     *,
@@ -644,7 +682,15 @@ async def import_plan_sheet_csv(db: AsyncSession, csv_text: str, source: str = '
     imported = await _replace_plan_values(db, effective_rows, source=source, updated_at=now)
     await db.commit()
     warnings.extend(_validate_plan_totals(parsed_rows))
-    return {'imported': imported, 'skipped': skipped, 'warnings': warnings}
+    diagnostics = _plan_import_diagnostics(parsed_rows, effective_rows, imported)
+    if diagnostics['parsed_rows']['branch'] and not diagnostics['parsed_rows']['staff']:
+        warnings.append('plan sheet has no staff rows; staff plans will be empty')
+    return {
+        'imported': imported,
+        'skipped': skipped,
+        'warnings': warnings,
+        'diagnostics': diagnostics,
+    }
 
 
 async def import_services_sheet_csv(
