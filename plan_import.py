@@ -835,16 +835,11 @@ async def import_services_sheet_from_config(db: AsyncSession) -> dict[str, Any]:
 
 async def import_plan_sheet_from_config(db: AsyncSession) -> dict[str, Any]:
     sheet_id = PLAN_SHEET_ID or _spreadsheet_id_from_url(PLAN_SHEET_CSV_URL)
+    service_account_error = None
     csv_error = None
 
     csv_text = None
-    if PLAN_SHEET_CSV_URL:
-        try:
-            csv_text = await asyncio.to_thread(_csv_text_from_url, PLAN_SHEET_CSV_URL)
-        except Exception as exc:
-            csv_error = exc
-
-    if csv_text is None:
+    if sheet_id:
         try:
             csv_text = await asyncio.to_thread(
                 _sheet_csv_text_from_service_account,
@@ -852,13 +847,24 @@ async def import_plan_sheet_from_config(db: AsyncSession) -> dict[str, Any]:
                 PLAN_SHEET_NAME or 'plan',
             )
         except Exception as exc:
-            skipped = []
-            if not PLAN_SHEET_CSV_URL and not sheet_id:
-                skipped.append('PLAN_SHEET_CSV_URL or PLAN_SHEET_ID is not configured')
-            if csv_error is not None:
-                skipped.append(f'plan sheet CSV URL is unavailable: {csv_error}')
-            skipped.append(f'plan sheet service account read failed: {exc}')
-            return {'imported': 0, 'skipped': skipped}
+            service_account_error = exc
+
+    if csv_text is None:
+        if PLAN_SHEET_CSV_URL:
+            try:
+                csv_text = await asyncio.to_thread(_csv_text_from_url, PLAN_SHEET_CSV_URL)
+            except Exception as exc:
+                csv_error = exc
+
+    if csv_text is None:
+        skipped = []
+        if not PLAN_SHEET_CSV_URL and not sheet_id:
+            skipped.append('PLAN_SHEET_CSV_URL or PLAN_SHEET_ID is not configured')
+        if service_account_error is not None:
+            skipped.append(f'plan sheet service account read failed: {service_account_error}')
+        if csv_error is not None:
+            skipped.append(f'plan sheet CSV URL is unavailable: {csv_error}')
+        return {'imported': 0, 'skipped': skipped}
 
     result = await import_plan_sheet_csv(db, csv_text, source='google_sheet')
     result['services'] = await import_services_sheet_from_config(db)

@@ -1550,6 +1550,53 @@ async def test_plan_sheet_config_import_falls_back_to_service_account(async_sess
 
 
 @pytest.mark.asyncio
+async def test_plan_sheet_config_import_prefers_named_service_account_sheet(async_session, monkeypatch):
+    async_session.add(Group(id=1, title='G1'))
+    async_session.add(Company(id=1, title='Salon 1', group_id=1))
+    async_session.add(Staff(id=10, name='Alice', position='Барбер', company_id=1))
+    await async_session.commit()
+
+    csv_called = False
+
+    def csv_url(_url):
+        nonlocal csv_called
+        csv_called = True
+        return (
+            'month,company_id,branch,Выручка,Кол-во клиентов\n'
+            '2025-01,1,Salon 1,10000,5\n'
+        )
+
+    def fake_service_account_sheet(sheet_id, sheet_name):
+        assert sheet_id == 'plan-sheet-id'
+        assert sheet_name == 'plan'
+        return (
+            'month,company_id,branch,staff_id,position,Выручка,Кол-во клиентов,"Воск, шт"\n'
+            '2025-01,1,Salon 1,10,Барбер,8000,4,2\n'
+        )
+
+    async def fake_services(_db):
+        return {'imported': 0, 'processed': 0, 'skipped': [], 'warnings': []}
+
+    monkeypatch.setattr(
+        plan_import,
+        'PLAN_SHEET_CSV_URL',
+        'https://docs.google.com/spreadsheets/d/csv-sheet-id/export?format=csv&gid=0',
+    )
+    monkeypatch.setattr(plan_import, 'PLAN_SHEET_ID', 'plan-sheet-id')
+    monkeypatch.setattr(plan_import, 'PLAN_SHEET_NAME', 'plan')
+    monkeypatch.setattr(plan_import, '_csv_text_from_url', csv_url)
+    monkeypatch.setattr(plan_import, '_sheet_csv_text_from_service_account', fake_service_account_sheet)
+    monkeypatch.setattr(plan_import, 'import_services_sheet_from_config', fake_services)
+
+    result = await plan_import.import_plan_sheet_from_config(async_session)
+
+    assert csv_called is False
+    assert result['imported'] == 6
+    assert result['diagnostics']['parsed_rows']['staff'] == 1
+    assert result['warnings'] == []
+
+
+@pytest.mark.asyncio
 async def test_plan_sheet_csv_imports_staff_rows_and_validates_branch_totals(async_session):
     async_session.add(Group(id=1, title='G1'))
     async_session.add(Company(id=1, title='Salon', group_id=1))
