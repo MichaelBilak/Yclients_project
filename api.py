@@ -39,15 +39,22 @@ from models import (
     Company,
     FinancialTransaction,
     Good,
+    GoodCatalog,
     GoodCategory,
+    GoodCategoryCatalog,
     GoodTransaction,
     Group,
+    AccountCatalog,
     Service,
+    ServiceCatalog,
     ServiceCategory,
+    ServiceCategoryCatalog,
     Staff,
     StaffPosition,
+    StaffPositionCatalog,
     StaffSchedule,
     Storage,
+    StorageCatalog,
     Transaction,
 )
 from sync_jobs import SyncJobService
@@ -222,13 +229,13 @@ async def api_service_categories(
     pagination: tuple[int, int] = Depends(page_params),
 ):
     limit, offset = pagination
-    stmt = select(ServiceCategory)
+    stmt = select(ServiceCategoryCatalog)
     if company_id is not None:
-        stmt = stmt.where(ServiceCategory.company_id == company_id)
-    stmt = stmt.order_by(ServiceCategory.id.asc())
+        stmt = stmt.where(ServiceCategoryCatalog.company_id == company_id)
+    stmt = stmt.order_by(ServiceCategoryCatalog.category_id.asc())
     total, items = await fetch_page(db, stmt, limit, offset)
     data = serialize_rows(items, lambda item: {
-        "id": item.id,
+        "id": item.category_id,
         "title": item.title,
         "weight": item.weight,
         "api_id": item.api_id,
@@ -247,19 +254,19 @@ async def api_services(
     pagination: tuple[int, int] = Depends(page_params),
 ):
     limit, offset = pagination
-    stmt = select(Service)
+    stmt = select(ServiceCatalog)
     if company_id is not None:
-        stmt = stmt.where(Service.company_id == company_id)
+        stmt = stmt.where(ServiceCatalog.company_id == company_id)
     if category:
-        stmt = stmt.where(Service.category_title == category)
+        stmt = stmt.where(ServiceCatalog.category_title == category)
     if min_price is not None:
-        stmt = stmt.where(Service.price_min >= min_price)
+        stmt = stmt.where(ServiceCatalog.price_min >= min_price)
     if max_price is not None:
-        stmt = stmt.where(Service.price_min <= max_price)
-    stmt = stmt.order_by(Service.id.asc())
+        stmt = stmt.where(ServiceCatalog.price_min <= max_price)
+    stmt = stmt.order_by(ServiceCatalog.service_id.asc())
     total, services = await fetch_page(db, stmt, limit, offset)
     data = serialize_rows(services, lambda item: {
-        "id": item.id,
+        "id": item.service_id,
         "title": item.title,
         "price_min": item.price_min,
         "duration_sec": item.duration,
@@ -277,13 +284,13 @@ async def api_staff_positions(
     pagination: tuple[int, int] = Depends(page_params),
 ):
     limit, offset = pagination
-    stmt = select(StaffPosition)
+    stmt = select(StaffPositionCatalog)
     if company_id is not None:
-        stmt = stmt.where(StaffPosition.company_id == company_id)
-    stmt = stmt.order_by(StaffPosition.id.asc())
+        stmt = stmt.where(StaffPositionCatalog.company_id == company_id)
+    stmt = stmt.order_by(StaffPositionCatalog.position_id.asc())
     total, items = await fetch_page(db, stmt, limit, offset)
     data = serialize_rows(items, lambda item: {
-        "id": item.id,
+        "id": item.position_id,
         "title": item.title,
         "company_id": item.company_id,
     })
@@ -352,13 +359,13 @@ async def api_accounts(
     pagination: tuple[int, int] = Depends(page_params),
 ):
     limit, offset = pagination
-    stmt = select(Account)
+    stmt = select(AccountCatalog)
     if company_id is not None:
-        stmt = stmt.where(Account.company_id == company_id)
-    stmt = stmt.order_by(Account.id.asc())
+        stmt = stmt.where(AccountCatalog.company_id == company_id)
+    stmt = stmt.order_by(AccountCatalog.account_id.asc())
     total, items = await fetch_page(db, stmt, limit, offset)
     data = serialize_rows(items, lambda item: {
-        "id": item.id,
+        "id": item.account_id,
         "title": item.title,
         "type": item.type,
         "comment": item.comment,
@@ -374,13 +381,13 @@ async def api_storages(
     pagination: tuple[int, int] = Depends(page_params),
 ):
     limit, offset = pagination
-    stmt = select(Storage)
+    stmt = select(StorageCatalog)
     if company_id is not None:
-        stmt = stmt.where(Storage.company_id == company_id)
-    stmt = stmt.order_by(Storage.id.asc())
+        stmt = stmt.where(StorageCatalog.company_id == company_id)
+    stmt = stmt.order_by(StorageCatalog.storage_id.asc())
     total, items = await fetch_page(db, stmt, limit, offset)
     data = serialize_rows(items, lambda item: {
-        "id": item.id,
+        "id": item.storage_id,
         "title": item.title,
         "for_services": item.for_services,
         "for_sale": item.for_sale,
@@ -397,13 +404,13 @@ async def api_good_categories(
     pagination: tuple[int, int] = Depends(page_params),
 ):
     limit, offset = pagination
-    stmt = select(GoodCategory)
+    stmt = select(GoodCategoryCatalog)
     if company_id is not None:
-        stmt = stmt.where(GoodCategory.company_id == company_id)
-    stmt = stmt.order_by(GoodCategory.id.asc())
+        stmt = stmt.where(GoodCategoryCatalog.company_id == company_id)
+    stmt = stmt.order_by(GoodCategoryCatalog.category_id.asc())
     total, items = await fetch_page(db, stmt, limit, offset)
     data = serialize_rows(items, lambda item: {
-        "id": item.id,
+        "id": item.category_id,
         "title": item.title,
         "parent_category_id": item.parent_category_id,
         "company_id": item.company_id,
@@ -419,12 +426,12 @@ async def api_goods(
     pagination: tuple[int, int] = Depends(page_params),
 ):
     limit, offset = pagination
-    stmt = select(Good)
+    stmt = select(GoodCatalog)
     if company_id is not None:
-        stmt = stmt.where(Good.company_id == company_id)
+        stmt = stmt.where(GoodCatalog.company_id == company_id)
     if category_id is not None:
-        stmt = stmt.where(Good.category_id == category_id)
-    stmt = stmt.order_by(Good.good_id.asc())
+        stmt = stmt.where(GoodCatalog.category_id == category_id)
+    stmt = stmt.order_by(GoodCatalog.good_id.asc())
     total, items = await fetch_page(db, stmt, limit, offset)
     data = serialize_rows(items, lambda item: {
         "good_id": item.good_id,
@@ -561,7 +568,9 @@ async def api_goods_transactions(
         "document_id": item.document_id,
         "type_id": item.type_id,
         "good_id": item.good_id,
+        "good_title": item.good_title,
         "storage_id": item.storage_id,
+        "storage_title": item.storage_title,
         "amount": item.amount,
         "cost_per_unit": item.cost_per_unit,
         "cost": item.cost,
@@ -670,14 +679,21 @@ async def api_stats(db: AsyncSession = Depends(get_async_db)):
         "groups": await count_of(Group),
         "companies": await count_of(Company),
         "service_categories": await count_of(ServiceCategory),
+        "service_category_catalog": await count_of(ServiceCategoryCatalog),
         "services": await count_of(Service),
+        "service_catalog": await count_of(ServiceCatalog),
         "staff_positions": await count_of(StaffPosition),
+        "staff_position_catalog": await count_of(StaffPositionCatalog),
         "staff": await count_of(Staff),
         "clients": await count_of(Client),
         "accounts": await count_of(Account),
+        "account_catalog": await count_of(AccountCatalog),
         "storages": await count_of(Storage),
+        "storage_catalog": await count_of(StorageCatalog),
         "good_categories": await count_of(GoodCategory),
+        "good_category_catalog": await count_of(GoodCategoryCatalog),
         "goods": await count_of(Good),
+        "good_catalog": await count_of(GoodCatalog),
         "appointments": appointments_total,
         "appointments_attended": attended_result.scalar_one(),
         "transactions": await count_of(Transaction),
@@ -725,14 +741,21 @@ TABLE_MAP = {
     "groups": Group,
     "companies": Company,
     "service_categories": ServiceCategory,
+    "service_category_catalog": ServiceCategoryCatalog,
     "services": Service,
+    "service_catalog": ServiceCatalog,
     "staff_positions": StaffPosition,
+    "staff_position_catalog": StaffPositionCatalog,
     "staff": Staff,
     "clients": Client,
     "accounts": Account,
+    "account_catalog": AccountCatalog,
     "storages": Storage,
+    "storage_catalog": StorageCatalog,
     "good_categories": GoodCategory,
+    "good_category_catalog": GoodCategoryCatalog,
     "goods": Good,
+    "good_catalog": GoodCatalog,
     "appointments": Appointment,
     "transactions": Transaction,
     "financial_transactions": FinancialTransaction,

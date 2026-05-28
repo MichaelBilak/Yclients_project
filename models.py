@@ -52,6 +52,21 @@ class ServiceCategory(Base):
     company_id = Column(Integer, ForeignKey('companies.id'), index=True)
 
 
+class ServiceCategoryCatalog(Base):
+    __tablename__ = 'service_category_catalog'
+
+    company_id = Column(Integer, ForeignKey('companies.id'), primary_key=True)
+    category_id = Column(Integer, primary_key=True)
+    title = Column(String, nullable=False)
+    weight = Column(Integer)
+    api_id = Column(String)
+    updated_at = Column(DateTime, nullable=False)
+
+    __table_args__ = (
+        Index('ix_service_category_catalog_category_id', 'category_id'),
+    )
+
+
 class Service(Base):
     __tablename__ = 'services'
 
@@ -63,6 +78,24 @@ class Service(Base):
     company_id = Column(Integer, ForeignKey('companies.id'), index=True)
 
     company = relationship("Company", back_populates="services")
+
+
+class ServiceCatalog(Base):
+    __tablename__ = 'service_catalog'
+
+    company_id = Column(Integer, ForeignKey('companies.id'), primary_key=True)
+    service_id = Column(Integer, primary_key=True)
+    title = Column(String, nullable=False)
+    price_min = Column(Float)
+    duration = Column(Integer)
+    category_id = Column(Integer)
+    category_title = Column(String, index=True)
+    updated_at = Column(DateTime, nullable=False)
+
+    __table_args__ = (
+        Index('ix_service_catalog_service_id', 'service_id'),
+        Index('ix_service_catalog_company_category', 'company_id', 'category_title'),
+    )
 
 
 class ServiceLabel(Base):
@@ -83,6 +116,19 @@ class StaffPosition(Base):
     id = Column(Integer, primary_key=True)
     title = Column(String, nullable=False)
     company_id = Column(Integer, ForeignKey('companies.id'), index=True)
+
+
+class StaffPositionCatalog(Base):
+    __tablename__ = 'staff_position_catalog'
+
+    company_id = Column(Integer, ForeignKey('companies.id'), primary_key=True)
+    position_id = Column(Integer, primary_key=True)
+    title = Column(String, nullable=False)
+    updated_at = Column(DateTime, nullable=False)
+
+    __table_args__ = (
+        Index('ix_staff_position_catalog_position_id', 'position_id'),
+    )
 
 
 class Staff(Base):
@@ -129,6 +175,21 @@ class Account(Base):
     company_id = Column(Integer, ForeignKey('companies.id'), index=True)
 
 
+class AccountCatalog(Base):
+    __tablename__ = 'account_catalog'
+
+    company_id = Column(Integer, ForeignKey('companies.id'), primary_key=True)
+    account_id = Column(Integer, primary_key=True)
+    title = Column(String, nullable=False)
+    type = Column(Integer, index=True)
+    comment = Column(Text)
+    updated_at = Column(DateTime, nullable=False)
+
+    __table_args__ = (
+        Index('ix_account_catalog_account_id', 'account_id'),
+    )
+
+
 class Storage(Base):
     __tablename__ = 'storages'
 
@@ -140,6 +201,22 @@ class Storage(Base):
     company_id = Column(Integer, ForeignKey('companies.id'), index=True)
 
 
+class StorageCatalog(Base):
+    __tablename__ = 'storage_catalog'
+
+    company_id = Column(Integer, ForeignKey('companies.id'), primary_key=True)
+    storage_id = Column(Integer, primary_key=True)
+    title = Column(String, nullable=False)
+    for_services = Column(Boolean, default=False)
+    for_sale = Column(Boolean, default=False)
+    comment = Column(Text)
+    updated_at = Column(DateTime, nullable=False)
+
+    __table_args__ = (
+        Index('ix_storage_catalog_storage_id', 'storage_id'),
+    )
+
+
 class GoodCategory(Base):
     __tablename__ = 'good_categories'
 
@@ -147,6 +224,20 @@ class GoodCategory(Base):
     title = Column(String, nullable=False)
     parent_category_id = Column(Integer, index=True)
     company_id = Column(Integer, ForeignKey('companies.id'), index=True)
+
+
+class GoodCategoryCatalog(Base):
+    __tablename__ = 'good_category_catalog'
+
+    company_id = Column(Integer, ForeignKey('companies.id'), primary_key=True)
+    category_id = Column(Integer, primary_key=True)
+    title = Column(String, nullable=False)
+    parent_category_id = Column(Integer, index=True)
+    updated_at = Column(DateTime, nullable=False)
+
+    __table_args__ = (
+        Index('ix_good_category_catalog_category_id', 'category_id'),
+    )
 
 
 class Good(Base):
@@ -161,6 +252,26 @@ class Good(Base):
     category_id = Column(Integer, index=True)
     last_change_date = Column(DateTime, index=True)
     company_id = Column(Integer, ForeignKey('companies.id'), index=True)
+
+
+class GoodCatalog(Base):
+    __tablename__ = 'good_catalog'
+
+    company_id = Column(Integer, ForeignKey('companies.id'), primary_key=True)
+    good_id = Column(Integer, primary_key=True)
+    title = Column(String, nullable=False)
+    cost = Column(Float)
+    actual_cost = Column(Float)
+    barcode = Column(String, index=True)
+    unit_short_title = Column(String)
+    category_id = Column(Integer, index=True)
+    last_change_date = Column(DateTime, index=True)
+    updated_at = Column(DateTime, nullable=False)
+
+    __table_args__ = (
+        Index('ix_good_catalog_good_id', 'good_id'),
+        Index('ix_good_catalog_company_category', 'company_id', 'category_id'),
+    )
 
 
 class Appointment(Base):
@@ -223,7 +334,9 @@ class GoodTransaction(Base):
     document_id = Column(Integer)
     type_id = Column(Integer)
     good_id = Column(Integer, index=True)
+    good_title = Column(String)
     storage_id = Column(Integer, index=True)
+    storage_title = Column(String)
     amount = Column(Float)
     cost_per_unit = Column(Float)
     cost = Column(Float)

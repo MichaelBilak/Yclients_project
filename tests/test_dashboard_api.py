@@ -27,6 +27,7 @@ from models import (
     Group,
     PlanMetric,
     Service,
+    ServiceCatalog,
     ServiceLabel,
     Staff,
     Transaction,
@@ -1160,7 +1161,7 @@ async def test_plan_fact_excludes_fired_staff(async_session):
 
     assert r.status_code == 200
     groups = r.json()['data']['groups']
-    assert [group['title'] for group in groups] == ['Active', 'Zero Plan']
+    assert [group['title'] for group in groups] == ['Active']
 
 
 @pytest.mark.asyncio
@@ -1364,6 +1365,67 @@ async def test_services_sheet_csv_imports_extra_service_labels(async_session):
     assert sorted((row.service_id, row.company_id, row.is_extra) for row in rows) == [
         (11, 1, True),
         (12, 2, True),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_services_sheet_csv_expands_unscoped_shared_service_labels_from_transactions(async_session):
+    async_session.add(Group(id=1, title='G1'))
+    async_session.add(Company(id=1, title='Salon 1', group_id=1))
+    async_session.add(Company(id=2, title='Salon 2', group_id=1))
+    async_session.add(Service(id=10, title='Воск', company_id=1))
+    async_session.add_all([
+        ServiceCatalog(company_id=1, service_id=10, title='Воск', updated_at=datetime(2025, 1, 1, 0, 0, 0)),
+        ServiceCatalog(company_id=2, service_id=10, title='Воск', updated_at=datetime(2025, 1, 1, 0, 0, 0)),
+    ])
+    async_session.add_all([
+        Transaction(id=1, appointment_id=1, service_id=10, service_title='Воск', amount=1, company_id=1),
+        Transaction(id=2, appointment_id=2, service_id=10, service_title='Воск', amount=1, company_id=2),
+    ])
+    await async_session.commit()
+
+    result = await import_services_sheet_csv(
+        async_session,
+        'id_услуги,Название услуги,доп услуга\n'
+        '10,Воск,да\n',
+    )
+
+    assert result['imported'] == 2
+    assert result['processed'] == 1
+    rows = (await async_session.execute(select(ServiceLabel))).scalars().all()
+    assert sorted((row.service_id, row.company_id, row.is_extra) for row in rows) == [
+        (10, 1, True),
+        (10, 2, True),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_services_sheet_csv_keeps_explicit_branch_scope_for_shared_service_ids(async_session):
+    async_session.add(Group(id=1, title='G1'))
+    async_session.add(Company(id=1, title='Salon 1', group_id=1))
+    async_session.add(Company(id=2, title='Salon 2', group_id=1))
+    async_session.add(Service(id=10, title='Воск', company_id=1))
+    async_session.add_all([
+        ServiceCatalog(company_id=1, service_id=10, title='Воск', updated_at=datetime(2025, 1, 1, 0, 0, 0)),
+        ServiceCatalog(company_id=2, service_id=10, title='Воск', updated_at=datetime(2025, 1, 1, 0, 0, 0)),
+    ])
+    async_session.add_all([
+        Transaction(id=1, appointment_id=1, service_id=10, service_title='Воск', amount=1, company_id=1),
+        Transaction(id=2, appointment_id=2, service_id=10, service_title='Воск', amount=1, company_id=2),
+    ])
+    await async_session.commit()
+
+    result = await import_services_sheet_csv(
+        async_session,
+        'company_id,id_услуги,Название услуги,доп услуга\n'
+        '1,10,Воск,да\n',
+    )
+
+    assert result['imported'] == 1
+    assert result['processed'] == 1
+    rows = (await async_session.execute(select(ServiceLabel))).scalars().all()
+    assert [(row.service_id, row.company_id, row.is_extra) for row in rows] == [
+        (10, 1, True),
     ]
 
 
@@ -1720,6 +1782,7 @@ async def test_plan_sheet_csv_excludes_staff_rows_with_zero_client_plan(async_se
     async_session.add(Company(id=1, title='Salon', group_id=1))
     async_session.add(Staff(id=10, name='Alice', position='Барбер', company_id=1))
     async_session.add(Staff(id=20, name='Bob', position='Барбер', company_id=1))
+    async_session.add(Staff(id=30, name='Charlie', position='Барбер', company_id=1))
     await async_session.commit()
 
     result = await import_plan_sheet_csv(
@@ -1727,11 +1790,12 @@ async def test_plan_sheet_csv_excludes_staff_rows_with_zero_client_plan(async_se
         'month,company_id,staff_id,position,выручка,кол-во клиентов,воск\n'
         '2025-01,1,10,Барбер,8000,4,2\n'
         '2025-01,1,20,Барбер,9000,3,5\n'
-        '2025-01,1,20,Барбер,9000,0,5\n',
+        '2025-01,1,20,Барбер,9000,0,5\n'
+        '2025-01,1,30,Барбер,0,,0\n',
     )
 
     assert result['imported'] == 6
-    assert result['diagnostics']['parsed_rows']['staff'] == 3
+    assert result['diagnostics']['parsed_rows']['staff'] == 4
     assert result['diagnostics']['effective_rows']['staff'] == 1
     rows = (
         await async_session.execute(

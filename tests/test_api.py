@@ -5,7 +5,7 @@ from httpx import ASGITransport, AsyncClient
 
 import api
 from api import app
-from models import Company, GoodTransaction, Group
+from models import Company, GoodCatalog, GoodTransaction, Group, ServiceCatalog
 
 
 @pytest.mark.asyncio
@@ -116,9 +116,9 @@ async def test_csv_export_streams_rows(async_session):
 
     assert response.status_code == 200
     content = response.text
-    assert 'id,document_id,type_id,good_id,storage_id,amount,cost_per_unit,cost,discount,master_id,client_id,company_id' in content
-    assert '1,,1,,,2.0,,10.0,,,,7' in content
-    assert '2,,3,,,1.0,,5.0,,,,7' in content
+    assert 'id,document_id,type_id,good_id,good_title,storage_id,storage_title,amount,cost_per_unit,cost,discount,master_id,client_id,company_id' in content
+    assert '1,,1,,,,,2.0,,10.0,,,,7' in content
+    assert '2,,3,,,,,1.0,,5.0,,,,7' in content
 
 
 @pytest.mark.asyncio
@@ -128,6 +128,8 @@ async def test_goods_transactions_endpoint_no_longer_depends_on_date_params(asyn
             id=10,
             company_id=9,
             type_id=1,
+            good_id=99,
+            good_title='Archived pomade',
             amount=1.0,
             cost=1.0,
             date=datetime(2026, 1, 2, 3, 4, 5),
@@ -149,4 +151,91 @@ async def test_goods_transactions_endpoint_no_longer_depends_on_date_params(asyn
     payload = response.json()
     assert payload['total'] == 1
     assert payload['data'][0]['id'] == 10
+    assert payload['data'][0]['good_title'] == 'Archived pomade'
     assert payload['data'][0]['date'] == '2026-01-02T03:04:05'
+
+
+@pytest.mark.asyncio
+async def test_services_endpoint_reads_branch_scoped_catalog(async_session):
+    async_session.add(Group(id=1, title='Group'))
+    async_session.add(Company(id=1, title='Salon 1', group_id=1))
+    async_session.add(Company(id=2, title='Salon 2', group_id=1))
+    async_session.add_all([
+        ServiceCatalog(
+            company_id=1,
+            service_id=10,
+            title='Воск',
+            price_min=500.0,
+            duration=900,
+            category_title='Уход',
+            updated_at=datetime(2026, 1, 1, 0, 0, 0),
+        ),
+        ServiceCatalog(
+            company_id=2,
+            service_id=10,
+            title='Воск',
+            price_min=550.0,
+            duration=900,
+            category_title='Уход',
+            updated_at=datetime(2026, 1, 1, 0, 0, 0),
+        ),
+    ])
+    await async_session.commit()
+
+    async def override_db():
+        yield async_session
+
+    app.dependency_overrides[api.get_async_db] = override_db
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url='http://test') as client:
+        response = await client.get('/services', params={'company_id': 2})
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload['total'] == 1
+    assert payload['data'][0]['id'] == 10
+    assert payload['data'][0]['company_id'] == 2
+    assert payload['data'][0]['price_min'] == 550.0
+
+
+@pytest.mark.asyncio
+async def test_goods_endpoint_reads_branch_scoped_catalog(async_session):
+    async_session.add(Group(id=1, title='Group'))
+    async_session.add(Company(id=1, title='Salon 1', group_id=1))
+    async_session.add(Company(id=2, title='Salon 2', group_id=1))
+    async_session.add_all([
+        GoodCatalog(
+            company_id=1,
+            good_id=100,
+            title='Paste A',
+            cost=1000.0,
+            updated_at=datetime(2026, 1, 1, 0, 0, 0),
+        ),
+        GoodCatalog(
+            company_id=2,
+            good_id=100,
+            title='Paste A',
+            cost=1200.0,
+            updated_at=datetime(2026, 1, 1, 0, 0, 0),
+        ),
+    ])
+    await async_session.commit()
+
+    async def override_db():
+        yield async_session
+
+    app.dependency_overrides[api.get_async_db] = override_db
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url='http://test') as client:
+        response = await client.get('/goods', params={'company_id': 1})
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload['total'] == 1
+    assert payload['data'][0]['good_id'] == 100
+    assert payload['data'][0]['company_id'] == 1
+    assert payload['data'][0]['cost'] == 1000.0

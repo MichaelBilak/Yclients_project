@@ -17,7 +17,7 @@ from models import (
     GoodTransaction,
     PlanMetric,
     PortalBranch,
-    Service,
+    ServiceCatalog,
     ServiceLabel,
     Staff,
     Transaction,
@@ -249,6 +249,20 @@ def _financial_service_label_join():
     return and_(
         ServiceLabel.service_id == FinancialTransaction.sold_item_id,
         ServiceLabel.company_id == Appointment.company_id,
+    )
+
+
+def _transaction_service_catalog_join():
+    return and_(
+        ServiceCatalog.service_id == Transaction.service_id,
+        ServiceCatalog.company_id == Appointment.company_id,
+    )
+
+
+def _financial_service_catalog_join():
+    return and_(
+        ServiceCatalog.service_id == FinancialTransaction.sold_item_id,
+        ServiceCatalog.company_id == Appointment.company_id,
     )
 
 
@@ -641,7 +655,7 @@ async def fetch_top_services(
     limit: int = 10,
     staff_id: Optional[int] = None,
 ) -> list[dict[str, Any]]:
-    title_expr = func.trim(func.coalesce(func.nullif(Transaction.service_title, ''), Service.title, ''))
+    title_expr = func.trim(func.coalesce(func.nullif(Transaction.service_title, ''), ServiceCatalog.title, ''))
     group_key = _service_group_key(title_expr, Transaction.service_id)
     count_stmt = (
         select(
@@ -654,7 +668,7 @@ async def fetch_top_services(
         )
         .select_from(Transaction)
         .join(Appointment, Appointment.id == Transaction.appointment_id)
-        .outerjoin(Service, Service.id == Transaction.service_id)
+        .outerjoin(ServiceCatalog, _transaction_service_catalog_join())
         .where(
             _appt_revenue_filters(start, end, company_id, staff_id),
         )
@@ -672,7 +686,7 @@ async def fetch_top_services(
     paid_title_expr = func.trim(
         func.coalesce(
             tx_titles.c.service_title,
-            func.nullif(Service.title, ''),
+            func.nullif(ServiceCatalog.title, ''),
             cast(FinancialTransaction.sold_item_id, String),
         )
     )
@@ -696,7 +710,7 @@ async def fetch_top_services(
                 tx_titles.c.service_id == FinancialTransaction.sold_item_id,
             ),
         )
-        .outerjoin(Service, Service.id == FinancialTransaction.sold_item_id)
+        .outerjoin(ServiceCatalog, _financial_service_catalog_join())
         .where(_service_paid_filters(start, end, company_id, staff_id))
         .group_by(paid_group_key)
         .order_by(paid_revenue.desc())
@@ -734,7 +748,7 @@ async def fetch_extra_services(
     limit: int = 50,
     staff_id: Optional[int] = None,
 ) -> list[dict[str, Any]]:
-    title_expr = func.trim(func.coalesce(func.nullif(Transaction.service_title, ''), Service.title, ''))
+    title_expr = func.trim(func.coalesce(func.nullif(Transaction.service_title, ''), ServiceCatalog.title, ''))
     group_key = _service_group_key(title_expr, Transaction.service_id)
     count_stmt = (
         select(
@@ -748,7 +762,7 @@ async def fetch_extra_services(
         .select_from(Transaction)
         .join(Appointment, Appointment.id == Transaction.appointment_id)
         .join(ServiceLabel, _transaction_service_label_join())
-        .outerjoin(Service, Service.id == Transaction.service_id)
+        .outerjoin(ServiceCatalog, _transaction_service_catalog_join())
         .where(
             _appt_revenue_filters(start, end, company_id, staff_id),
             ServiceLabel.is_extra.is_(True),
@@ -767,7 +781,7 @@ async def fetch_extra_services(
     paid_title_expr = func.trim(
         func.coalesce(
             tx_titles.c.service_title,
-            func.nullif(Service.title, ''),
+            func.nullif(ServiceCatalog.title, ''),
             cast(FinancialTransaction.sold_item_id, String),
         )
     )
@@ -787,7 +801,7 @@ async def fetch_extra_services(
             ),
         )
         .join(ServiceLabel, _financial_service_label_join())
-        .outerjoin(Service, Service.id == FinancialTransaction.sold_item_id)
+        .outerjoin(ServiceCatalog, _financial_service_catalog_join())
         .where(
             _service_paid_filters(start, end, company_id, staff_id),
             ServiceLabel.is_extra.is_(True),
@@ -818,7 +832,7 @@ async def _service_group_counts(
     company_id: int,
     staff_id: Optional[int] = None,
 ) -> dict[str, float]:
-    title_expr = func.lower(func.coalesce(Transaction.service_title, Service.title, ''))
+    title_expr = func.lower(func.coalesce(Transaction.service_title, ServiceCatalog.title, ''))
     stmt = (
         select(
             _service_qty_sum(title_expr, WAX_TITLE_PARTS).label('wax_qty'),
@@ -828,7 +842,7 @@ async def _service_group_counts(
         )
         .select_from(Transaction)
         .join(Appointment, Appointment.id == Transaction.appointment_id)
-        .outerjoin(Service, Service.id == Transaction.service_id)
+        .outerjoin(ServiceCatalog, _transaction_service_catalog_join())
         .where(_appt_revenue_filters(start, end, company_id, staff_id))
     )
     row = (await db.execute(stmt)).one()
@@ -1114,8 +1128,15 @@ def _has_zero_clients_plan(plan_values: dict[str, float]) -> bool:
     )
 
 
+def _has_positive_plan_values(plan_values: dict[str, float]) -> bool:
+    return any(float(value or 0.0) > 0.0 for value in plan_values.values())
+
+
 def _is_visible_staff_plan(plan_values: dict[str, float]) -> bool:
-    return not _has_zero_clients_plan(plan_values)
+    return (
+        not _has_zero_clients_plan(plan_values)
+        and (not plan_values or _has_positive_plan_values(plan_values))
+    )
 
 
 def _metric_sets_payload() -> dict[str, list[dict[str, str]]]:

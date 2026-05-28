@@ -32,7 +32,7 @@ from config import (
     SERVICES_SHEET_ID,
     SERVICES_SHEET_NAME,
 )
-from models import Company, PlanMetric, Service, ServiceLabel, Staff
+from models import Company, PlanMetric, Service, ServiceCatalog, ServiceLabel, Staff
 from plan_config import (
     PLAN_FACT_METRICS,
     RAW_PLAN_FACT_CODES,
@@ -246,6 +246,17 @@ def _has_zero_clients_plan(row: ParsedPlanRow) -> bool:
     )
 
 
+def _has_positive_plan_values(row: ParsedPlanRow) -> bool:
+    return any(float(value or 0.0) > 0.0 for value in row.values.values())
+
+
+def _is_non_working_staff_plan(row: ParsedPlanRow) -> bool:
+    return row.scope == 'staff' and (
+        _has_zero_clients_plan(row)
+        or not _has_positive_plan_values(row)
+    )
+
+
 def _scope_count(rows: list[ParsedPlanRow], scope: str) -> int:
     return sum(1 for row in rows if row.scope == scope)
 
@@ -333,7 +344,7 @@ def _effective_import_rows(parsed_rows: list[ParsedPlanRow]) -> list[ParsedPlanR
         if row.scope == 'network' or row.company_id is None:
             continue
         key = (row.period_start, row.period_end, row.company_id, row.staff_id)
-        if _has_zero_clients_plan(row):
+        if _is_non_working_staff_plan(row):
             rows_by_key.pop(key, None)
             continue
         rows_by_key[key] = row
@@ -710,16 +721,45 @@ async def import_services_sheet_csv(
     csv_text: str,
     source: str = 'google_sheet:services',
 ) -> dict[str, Any]:
-    service_rows = (await db.execute(select(Service.id, Service.title, Service.company_id, Service.category_title))).all()
-    services_by_id = {int(row.id): row for row in service_rows}
+    service_rows = (
+        await db.execute(
+            select(
+                ServiceCatalog.service_id.label('service_id'),
+                ServiceCatalog.title.label('title'),
+                ServiceCatalog.company_id.label('company_id'),
+                ServiceCatalog.category_title.label('category_title'),
+            )
+        )
+    ).all()
+    if not service_rows:
+        service_rows = (
+            await db.execute(
+                select(
+                    Service.id.label('service_id'),
+                    Service.title.label('title'),
+                    Service.company_id.label('company_id'),
+                    Service.category_title.label('category_title'),
+                )
+            )
+        ).all()
+    legacy_service_ids = {
+        int(row.id)
+        for row in (await db.execute(select(Service.id))).all()
+    }
+    services_by_id: dict[int, list[Any]] = {}
     services_by_company_title: dict[tuple[int, str], list[Any]] = {}
     services_by_title: dict[str, list[Any]] = {}
     for row in service_rows:
+        services_by_id.setdefault(int(row.service_id), []).append(row)
         services_by_company_title.setdefault((int(row.company_id), _normalize(row.title)), []).append(row)
         services_by_title.setdefault(_normalize(row.title), []).append(row)
 
     company_rows = (await db.execute(select(Company.id, Company.title))).all()
     companies_by_title = {_normalize(row.title): int(row.id) for row in company_rows}
+    company_ids = {int(row.id) for row in company_rows}
+    service_company_ids_by_id: dict[int, set[int]] = {}
+    for row in service_rows:
+        service_company_ids_by_id.setdefault(int(row.service_id), set()).add(int(row.company_id))
 
     reader = csv.DictReader(io.StringIO(csv_text))
     now = datetime.utcnow()
@@ -731,22 +771,29 @@ async def import_services_sheet_csv(
     for index, row in enumerate(reader, start=2):
         service_id_value = _find_value(row, SERVICE_ID_ALIASES).strip()
         service_id = int(service_id_value) if service_id_value.isdigit() else None
-        service_row = services_by_id.get(service_id) if service_id is not None else None
-        matched_by_id = service_row is not None
-        matched_services = [service_row] if service_row is not None else []
+        matched_services = list(services_by_id.get(service_id, [])) if service_id is not None else []
+        matched_by_id = bool(matched_services)
         title_value = _find_value(row, SERVICE_TITLE_ALIASES)
         category_value = _find_value(row, SERVICE_CATEGORY_ALIASES)
         category_key = _normalize(category_value)
 
         company_id_value = _find_value(row, COMPANY_ID_ALIASES).strip()
+        branch_value = _find_value(row, BRANCH_ALIASES)
+        has_company_scope = bool(company_id_value or branch_value)
         company_id = int(company_id_value) if company_id_value.isdigit() else None
         if company_id is None:
-            branch_value = _find_value(row, BRANCH_ALIASES)
             company_id = companies_by_title.get(_normalize(branch_value))
+        if has_company_scope and company_id is None:
+            skipped.append(f'row {index}: unknown company {branch_value or company_id_value}')
+            continue
+        if company_id is not None and company_id not in company_ids:
+            skipped.append(f'row {index}: unknown company {branch_value or company_id_value}')
+            continue
 
-        if service_row is None:
+        if not matched_services:
             if company_id is not None and title_value:
-                matched_services = list(services_by_company_title.get((company_id, _normalize(title_value)), []))
+                title_key = _normalize(title_value)
+                matched_services = list(services_by_company_title.get((company_id, title_key), []))
             elif title_value:
                 matched_services = list(services_by_title.get(_normalize(title_value), []))
 
@@ -754,7 +801,13 @@ async def import_services_sheet_csv(
             matched_services = [
                 matched_service
                 for matched_service in matched_services
-                if matched_service is not None and int(matched_service.company_id) == company_id
+                if (
+                    matched_service is not None
+                    and (
+                        int(matched_service.company_id) == company_id
+                        or company_id in service_company_ids_by_id.get(int(matched_service.service_id), set())
+                    )
+                )
             ]
         if category_key and not matched_by_id:
             category_matches = [
@@ -778,15 +831,25 @@ async def import_services_sheet_csv(
         processed_markers += 1
         if is_extra:
             for matched_service in matched_services:
-                service_id = int(matched_service.id)
-                company_id = int(matched_service.company_id)
-                labels_by_service_key[(service_id, company_id)] = ServiceLabel(
-                    service_id=service_id,
-                    company_id=company_id,
-                    is_extra=True,
-                    source=source,
-                    updated_at=now,
+                service_id = int(matched_service.service_id)
+                if service_id not in legacy_service_ids:
+                    skipped.append(f'row {index}: service {service_id} is missing in legacy services table')
+                    continue
+                label_company_ids = (
+                    {company_id}
+                    if company_id is not None
+                    else service_company_ids_by_id.get(service_id, {int(matched_service.company_id)})
                 )
+                for label_company_id in label_company_ids:
+                    if label_company_id not in company_ids:
+                        continue
+                    labels_by_service_key[(service_id, label_company_id)] = ServiceLabel(
+                        service_id=service_id,
+                        company_id=label_company_id,
+                        is_extra=True,
+                        source=source,
+                        updated_at=now,
+                    )
 
     if processed_markers == 0:
         warnings.append('services sheet has no rows with extra-service marker; labels unchanged')

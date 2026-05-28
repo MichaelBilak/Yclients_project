@@ -115,30 +115,41 @@ VIEWS = [
     CREATE OR REPLACE VIEW v_popular_services AS
     WITH sold AS (
         SELECT
+            a.company_id,
             t.service_id,
-            t.service_title,
+            COALESCE(NULLIF(t.service_title, ''), svc.title)::varchar AS service_title,
             SUM(t.amount)                               AS total_sold
         FROM transactions t
-        GROUP BY t.service_id, t.service_title
+        JOIN appointments a ON a.id = t.appointment_id
+        LEFT JOIN service_catalog svc
+            ON  svc.company_id = a.company_id
+            AND svc.service_id = t.service_id
+        GROUP BY a.company_id, t.service_id, COALESCE(NULLIF(t.service_title, ''), svc.title)::varchar
     ),
     paid AS (
         SELECT
+            a.company_id,
             ft.sold_item_id                             AS service_id,
             COALESCE(SUM(ft.amount), 0)                 AS total_revenue
         FROM financial_transactions ft
         JOIN appointments a ON a.id = ft.record_id
         WHERE a.attendance > 0
           AND ft.sold_item_type = 'service'
-        GROUP BY ft.sold_item_id
+        GROUP BY a.company_id, ft.sold_item_id
     )
     SELECT
         sold.service_id,
         sold.service_title,
         sold.total_sold,
         COALESCE(paid.total_revenue, 0)                 AS total_revenue,
-        ROUND((COALESCE(paid.total_revenue, 0) / NULLIF(sold.total_sold, 0))::numeric, 2) AS avg_price
+        ROUND((COALESCE(paid.total_revenue, 0) / NULLIF(sold.total_sold, 0))::numeric, 2) AS avg_price,
+        sold.company_id,
+        c.title                                         AS company_name
     FROM sold
-    LEFT JOIN paid ON paid.service_id = sold.service_id
+    LEFT JOIN paid
+        ON  paid.company_id = sold.company_id
+        AND paid.service_id = sold.service_id
+    LEFT JOIN companies c ON c.id = sold.company_id
     ORDER BY total_sold DESC
     """,
 
@@ -288,16 +299,21 @@ VIEWS = [
     """
     CREATE OR REPLACE VIEW v_finance_by_account AS
     SELECT
-        acc.id                                          AS account_id,
+        acc.account_id,
         acc.title                                       AS account_name,
         acc.type                                        AS account_type,
         COUNT(ft.id)                                    AS transactions_count,
         COALESCE(SUM(CASE WHEN ft.amount > 0 THEN ft.amount ELSE 0 END), 0) AS total_income,
         COALESCE(SUM(CASE WHEN ft.amount < 0 THEN ABS(ft.amount) ELSE 0 END), 0) AS total_expense,
-        COALESCE(SUM(ft.amount), 0)                     AS balance
-    FROM accounts acc
-    LEFT JOIN financial_transactions ft ON ft.account_id = acc.id
-    GROUP BY acc.id, acc.title, acc.type
+        COALESCE(SUM(ft.amount), 0)                     AS balance,
+        acc.company_id,
+        c.title                                         AS company_name
+    FROM account_catalog acc
+    LEFT JOIN companies c ON c.id = acc.company_id
+    LEFT JOIN financial_transactions ft
+        ON  ft.account_id = acc.account_id
+        AND ft.company_id = acc.company_id
+    GROUP BY acc.company_id, c.title, acc.account_id, acc.title, acc.type
     ORDER BY total_income DESC
     """,
 
@@ -323,16 +339,21 @@ VIEWS = [
     """
     CREATE OR REPLACE VIEW v_goods_sales AS
     SELECT
-        g.good_id,
-        g.title                                         AS good_title,
+        gt.good_id,
+        COALESCE(NULLIF(gt.good_title, ''), g.title, gt.good_id::text)::varchar AS good_title,
         g.cost                                          AS list_price,
         COUNT(gt.id)                                    AS total_transactions,
         COALESCE(SUM(gt.amount), 0)                     AS total_qty_sold,
         COALESCE(SUM(gt.cost), 0)                       AS total_revenue,
-        ROUND(AVG(gt.cost_per_unit)::numeric, 2)        AS avg_sell_price
-    FROM goods g
-    LEFT JOIN goods_transactions gt ON gt.good_id = g.good_id
-    GROUP BY g.good_id, g.title, g.cost
+        ROUND(AVG(gt.cost_per_unit)::numeric, 2)        AS avg_sell_price,
+        gt.company_id,
+        c.title                                         AS company_name
+    FROM goods_transactions gt
+    LEFT JOIN good_catalog g
+        ON  g.company_id = gt.company_id
+        AND g.good_id = gt.good_id
+    LEFT JOIN companies c ON c.id = gt.company_id
+    GROUP BY gt.company_id, c.title, gt.good_id, COALESCE(NULLIF(gt.good_title, ''), g.title, gt.good_id::text), g.cost
     ORDER BY total_revenue DESC
     """,
 
@@ -342,14 +363,19 @@ VIEWS = [
     """
     CREATE OR REPLACE VIEW v_goods_movement AS
     SELECT
-        st.id                                           AS storage_id,
+        st.storage_id,
         st.title                                        AS storage_name,
         COUNT(gt.id)                                    AS transactions_count,
         COALESCE(SUM(gt.amount), 0)                     AS total_units,
-        COALESCE(SUM(gt.cost), 0)                       AS total_cost
-    FROM storages st
-    LEFT JOIN goods_transactions gt ON gt.storage_id = st.id
-    GROUP BY st.id, st.title
+        COALESCE(SUM(gt.cost), 0)                       AS total_cost,
+        st.company_id,
+        c.title                                         AS company_name
+    FROM storage_catalog st
+    LEFT JOIN companies c ON c.id = st.company_id
+    LEFT JOIN goods_transactions gt
+        ON  gt.storage_id = st.storage_id
+        AND gt.company_id = st.company_id
+    GROUP BY st.company_id, c.title, st.storage_id, st.title
     ORDER BY total_cost DESC
     """,
 
@@ -428,13 +454,13 @@ VIEWS = [
     """
     CREATE OR REPLACE VIEW v_services_lookup AS
     SELECT
-        s.id                                            AS service_id,
+        s.service_id,
         s.title                                         AS service_name,
         s.category_title                                AS service_category,
         s.company_id,
         c.title                                         AS company_name,
         s.title || ' — ' || c.title                     AS service_label
-    FROM services s
+    FROM service_catalog s
     LEFT JOIN companies c ON c.id = s.company_id
     ORDER BY s.title ASC, c.title ASC
     """,
@@ -575,7 +601,9 @@ VIEWS = [
     LEFT JOIN service_paid sp
         ON  sp.appointment_id = a.id
         AND sp.service_id = t.service_id
-    LEFT JOIN services svc ON svc.id = t.service_id
+    LEFT JOIN service_catalog svc
+        ON  svc.company_id = a.company_id
+        AND svc.service_id = t.service_id
     LEFT JOIN companies c ON c.id = a.company_id
     LEFT JOIN staff s ON s.id = a.staff_id
     LEFT JOIN clients cl ON cl.id = a.client_id
@@ -628,7 +656,9 @@ VIEWS = [
         ft.comment
     FROM financial_transactions ft
     LEFT JOIN companies c ON c.id = ft.company_id
-    LEFT JOIN accounts acc ON acc.id = ft.account_id
+    LEFT JOIN account_catalog acc
+        ON  acc.company_id = ft.company_id
+        AND acc.account_id = ft.account_id
     LEFT JOIN clients cl ON cl.id = ft.client_id
     LEFT JOIN staff s ON s.id = ft.master_id
     LEFT JOIN v_calendar cal ON cal.calendar_date = ft.date::date
@@ -646,9 +676,9 @@ VIEWS = [
         c.title                                         AS company_name,
         c.title || ' (' || gt.company_id || ')'         AS company_label,
         gt.good_id,
-        g.title                                         AS good_title,
+        COALESCE(NULLIF(gt.good_title, ''), g.title, gt.good_id::text)::varchar AS good_title,
         gt.storage_id,
-        st.title                                        AS storage_name,
+        COALESCE(NULLIF(gt.storage_title, ''), st.title)::varchar AS storage_name,
         gt.client_id,
         cl.name                                         AS client_name,
         gt.master_id,
@@ -667,8 +697,12 @@ VIEWS = [
         gt.date                                         AS transaction_date
     FROM goods_transactions gt
     LEFT JOIN companies c ON c.id = gt.company_id
-    LEFT JOIN goods g ON g.good_id = gt.good_id
-    LEFT JOIN storages st ON st.id = gt.storage_id
+    LEFT JOIN good_catalog g
+        ON  g.company_id = gt.company_id
+        AND g.good_id = gt.good_id
+    LEFT JOIN storage_catalog st
+        ON  st.company_id = gt.company_id
+        AND st.storage_id = gt.storage_id
     LEFT JOIN clients cl ON cl.id = gt.client_id
     LEFT JOIN staff s ON s.id = gt.master_id
     ORDER BY gt.id ASC

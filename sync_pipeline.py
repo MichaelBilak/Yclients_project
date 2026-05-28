@@ -15,8 +15,11 @@ from config import (
 from yclients_api import YClientsAPI
 from database import init_database
 from models import (
-    Group, Company, ServiceCategory, Service, StaffPosition, Staff, Client,
-    Account, Storage, GoodCategory, Good,
+    Group, Company,
+    ServiceCategory, ServiceCategoryCatalog, Service,
+    ServiceCatalog, StaffPosition, StaffPositionCatalog, Staff, Client,
+    Account, AccountCatalog, Storage, StorageCatalog,
+    GoodCategory, GoodCategoryCatalog, Good, GoodCatalog,
     Appointment, Transaction, FinancialTransaction, GoodTransaction,
     Comment, StaffSchedule,
     AnalyticsOverall, AnalyticsDailyMetric, AnalyticsSourceMetric,
@@ -51,6 +54,19 @@ def load_existing_map(db, model, ids, pk_column):
     for batch in chunked(unique_ids, DB_BATCH_SIZE):
         for obj in db.query(model).filter(pk_column.in_(batch)).all():
             existing[getattr(obj, pk_column.key)] = obj
+    return existing
+
+
+def load_existing_branch_map(db, model, company_id: int, ids, id_column):
+    existing = {}
+    unique_ids = [item_id for item_id in dict.fromkeys(ids) if item_id is not None]
+    for batch in chunked(unique_ids, DB_BATCH_SIZE):
+        for obj in (
+            db.query(model)
+            .filter(model.company_id == company_id, id_column.in_(batch))
+            .all()
+        ):
+            existing[getattr(obj, id_column.key)] = obj
     return existing
 
 
@@ -317,16 +333,42 @@ def sync_service_categories(api: YClientsAPI, db, company_id: str):
 
     try:
         cid = int(company_id)
+        now = datetime.now()
         existing_categories = load_existing_map(
             db,
             ServiceCategory,
             (category.get('id') for category in categories),
             ServiceCategory.id,
         )
+        existing_catalog = load_existing_branch_map(
+            db,
+            ServiceCategoryCatalog,
+            cid,
+            (category.get('id') for category in categories),
+            ServiceCategoryCatalog.category_id,
+        )
         for c in categories:
             cat_id = c.get('id')
             if cat_id is None:
                 continue
+            catalog_obj = existing_catalog.get(cat_id)
+            if not catalog_obj:
+                catalog_obj = ServiceCategoryCatalog(
+                    company_id=cid,
+                    category_id=cat_id,
+                    title=c.get('title', ''),
+                    weight=c.get('weight'),
+                    api_id=c.get('api_id'),
+                    updated_at=now,
+                )
+                db.add(catalog_obj)
+                existing_catalog[cat_id] = catalog_obj
+            else:
+                catalog_obj.title = c.get('title', '')
+                catalog_obj.weight = c.get('weight')
+                catalog_obj.api_id = c.get('api_id')
+                catalog_obj.updated_at = now
+
             obj = existing_categories.get(cat_id)
             if not obj:
                 obj = ServiceCategory(
@@ -368,19 +410,51 @@ def sync_services(api: YClientsAPI, db, company_id: str):
 
     try:
         cid = int(company_id)
+        now = datetime.now()
         existing_services = load_existing_map(
             db,
             Service,
             (service.get('id') for service in services),
             Service.id,
         )
+        existing_catalog = load_existing_branch_map(
+            db,
+            ServiceCatalog,
+            cid,
+            (service.get('id') for service in services),
+            ServiceCatalog.service_id,
+        )
         for service_data in services:
             service_id = service_data.get('id')
             if service_id is None:
                 continue
             category_title = None
+            category_id = None
             if 'category' in service_data and service_data['category']:
+                category_id = service_data['category'].get('id')
                 category_title = service_data['category'].get('title')
+
+            catalog_obj = existing_catalog.get(service_id)
+            if not catalog_obj:
+                catalog_obj = ServiceCatalog(
+                    company_id=cid,
+                    service_id=service_id,
+                    title=service_data.get('title', ''),
+                    price_min=service_data.get('price_min'),
+                    duration=service_data.get('duration'),
+                    category_id=category_id,
+                    category_title=category_title,
+                    updated_at=now,
+                )
+                db.add(catalog_obj)
+                existing_catalog[service_id] = catalog_obj
+            else:
+                catalog_obj.title = service_data.get('title', '')
+                catalog_obj.price_min = service_data.get('price_min')
+                catalog_obj.duration = service_data.get('duration')
+                catalog_obj.category_id = category_id
+                catalog_obj.category_title = category_title
+                catalog_obj.updated_at = now
 
             obj = existing_services.get(service_id)
             if not obj:
@@ -425,16 +499,38 @@ def sync_positions(api: YClientsAPI, db, company_id: str):
 
     try:
         cid = int(company_id)
+        now = datetime.now()
         existing_positions = load_existing_map(
             db,
             StaffPosition,
             (position.get('id') for position in positions),
             StaffPosition.id,
         )
+        existing_catalog = load_existing_branch_map(
+            db,
+            StaffPositionCatalog,
+            cid,
+            (position.get('id') for position in positions),
+            StaffPositionCatalog.position_id,
+        )
         for p in positions:
             pid = p.get('id')
             if pid is None:
                 continue
+            catalog_obj = existing_catalog.get(pid)
+            if not catalog_obj:
+                catalog_obj = StaffPositionCatalog(
+                    company_id=cid,
+                    position_id=pid,
+                    title=p.get('title', ''),
+                    updated_at=now,
+                )
+                db.add(catalog_obj)
+                existing_catalog[pid] = catalog_obj
+            else:
+                catalog_obj.title = p.get('title', '')
+                catalog_obj.updated_at = now
+
             obj = existing_positions.get(pid)
             if not obj:
                 obj = StaffPosition(id=pid, title=p.get('title', ''), company_id=cid)
@@ -605,16 +701,42 @@ def sync_accounts(api: YClientsAPI, db, company_id: str):
 
     try:
         cid = int(company_id)
+        now = datetime.now()
         existing_accounts = load_existing_map(
             db,
             Account,
             (account.get('id') for account in accounts),
             Account.id,
         )
+        existing_catalog = load_existing_branch_map(
+            db,
+            AccountCatalog,
+            cid,
+            (account.get('id') for account in accounts),
+            AccountCatalog.account_id,
+        )
         for a in accounts:
             aid = a.get('id')
             if aid is None:
                 continue
+            catalog_obj = existing_catalog.get(aid)
+            if not catalog_obj:
+                catalog_obj = AccountCatalog(
+                    company_id=cid,
+                    account_id=aid,
+                    title=a.get('title', ''),
+                    type=a.get('type'),
+                    comment=a.get('comment'),
+                    updated_at=now,
+                )
+                db.add(catalog_obj)
+                existing_catalog[aid] = catalog_obj
+            else:
+                catalog_obj.title = a.get('title', '')
+                catalog_obj.type = a.get('type')
+                catalog_obj.comment = a.get('comment')
+                catalog_obj.updated_at = now
+
             obj = existing_accounts.get(aid)
             if not obj:
                 obj = Account(
@@ -654,16 +776,44 @@ def sync_storages(api: YClientsAPI, db, company_id: str):
 
     try:
         cid = int(company_id)
+        now = datetime.now()
         existing_storages = load_existing_map(
             db,
             Storage,
             (storage.get('id') for storage in storages),
             Storage.id,
         )
+        existing_catalog = load_existing_branch_map(
+            db,
+            StorageCatalog,
+            cid,
+            (storage.get('id') for storage in storages),
+            StorageCatalog.storage_id,
+        )
         for s in storages:
             sid = s.get('id')
             if sid is None:
                 continue
+            catalog_obj = existing_catalog.get(sid)
+            if not catalog_obj:
+                catalog_obj = StorageCatalog(
+                    company_id=cid,
+                    storage_id=sid,
+                    title=s.get('title', ''),
+                    for_services=s.get('for_services', False),
+                    for_sale=s.get('for_sale', False),
+                    comment=s.get('comment'),
+                    updated_at=now,
+                )
+                db.add(catalog_obj)
+                existing_catalog[sid] = catalog_obj
+            else:
+                catalog_obj.title = s.get('title', '')
+                catalog_obj.for_services = s.get('for_services', False)
+                catalog_obj.for_sale = s.get('for_sale', False)
+                catalog_obj.comment = s.get('comment')
+                catalog_obj.updated_at = now
+
             obj = existing_storages.get(sid)
             if not obj:
                 obj = Storage(
@@ -706,16 +856,40 @@ def sync_good_categories(api: YClientsAPI, db, company_id: str):
 
     try:
         cid = int(company_id)
+        now = datetime.now()
         existing_categories = load_existing_map(
             db,
             GoodCategory,
             (category.get('id') for category in categories),
             GoodCategory.id,
         )
+        existing_catalog = load_existing_branch_map(
+            db,
+            GoodCategoryCatalog,
+            cid,
+            (category.get('id') for category in categories),
+            GoodCategoryCatalog.category_id,
+        )
         for c in categories:
             cat_id = c.get('id')
             if cat_id is None:
                 continue
+            catalog_obj = existing_catalog.get(cat_id)
+            if not catalog_obj:
+                catalog_obj = GoodCategoryCatalog(
+                    company_id=cid,
+                    category_id=cat_id,
+                    title=c.get('title', ''),
+                    parent_category_id=c.get('parent_category_id'),
+                    updated_at=now,
+                )
+                db.add(catalog_obj)
+                existing_catalog[cat_id] = catalog_obj
+            else:
+                catalog_obj.title = c.get('title', '')
+                catalog_obj.parent_category_id = c.get('parent_category_id')
+                catalog_obj.updated_at = now
+
             obj = existing_categories.get(cat_id)
             if not obj:
                 obj = GoodCategory(
@@ -754,16 +928,51 @@ def sync_goods(api: YClientsAPI, db, company_id: str):
 
     try:
         cid = int(company_id)
+        now = datetime.now()
         good_ids = [
             g.get('good_id') or g.get('id')
             for g in goods
             if g.get('good_id') or g.get('id')
         ]
         existing_goods = load_existing_map(db, Good, good_ids, Good.good_id)
+        existing_catalog = load_existing_branch_map(
+            db,
+            GoodCatalog,
+            cid,
+            good_ids,
+            GoodCatalog.good_id,
+        )
         for g in goods:
             gid = g.get('good_id') or g.get('id')
             if not gid:
                 continue
+            last_change_date = parse_datetime(g.get('last_change_date'))
+
+            catalog_obj = existing_catalog.get(gid)
+            if not catalog_obj:
+                catalog_obj = GoodCatalog(
+                    company_id=cid,
+                    good_id=gid,
+                    title=g.get('title', ''),
+                    cost=g.get('cost'),
+                    actual_cost=g.get('actual_cost'),
+                    barcode=g.get('barcode'),
+                    unit_short_title=g.get('unit_short_title'),
+                    category_id=g.get('category_id'),
+                    last_change_date=last_change_date,
+                    updated_at=now,
+                )
+                db.add(catalog_obj)
+                existing_catalog[gid] = catalog_obj
+            else:
+                catalog_obj.title = g.get('title', '')
+                catalog_obj.cost = g.get('cost')
+                catalog_obj.actual_cost = g.get('actual_cost')
+                catalog_obj.barcode = g.get('barcode')
+                catalog_obj.unit_short_title = g.get('unit_short_title')
+                catalog_obj.category_id = g.get('category_id')
+                catalog_obj.last_change_date = last_change_date
+                catalog_obj.updated_at = now
 
             obj = existing_goods.get(gid)
             if not obj:
@@ -773,7 +982,7 @@ def sync_goods(api: YClientsAPI, db, company_id: str):
                     barcode=g.get('barcode'),
                     unit_short_title=g.get('unit_short_title'),
                     category_id=g.get('category_id'),
-                    last_change_date=parse_datetime(g.get('last_change_date')),
+                    last_change_date=last_change_date,
                     company_id=cid,
                 )
                 db.add(obj)
@@ -784,7 +993,7 @@ def sync_goods(api: YClientsAPI, db, company_id: str):
                 obj.barcode = g.get('barcode')
                 obj.unit_short_title = g.get('unit_short_title')
                 obj.category_id = g.get('category_id')
-                obj.last_change_date = parse_datetime(g.get('last_change_date'))
+                obj.last_change_date = last_change_date
 
         db.commit()
         print(f"  ✓ Товары сохранены ({len(goods)} шт.)")
@@ -993,6 +1202,10 @@ def sync_goods_transactions(api: YClientsAPI, db, company_id: str,
             storage = t.get('storage') or {}
             master = t.get('master') or {}
             client = t.get('client') or {}
+            good_id = good.get('id') if isinstance(good, dict) else None
+            good_title = good.get('title') if isinstance(good, dict) else None
+            storage_id = storage.get('id') if isinstance(storage, dict) else None
+            storage_title = storage.get('title') if isinstance(storage, dict) else None
 
             tx_date = parse_datetime(t.get('create_date') or t.get('date'))
 
@@ -1001,8 +1214,10 @@ def sync_goods_transactions(api: YClientsAPI, db, company_id: str,
                     id=tid,
                     document_id=t.get('document_id'),
                     type_id=t.get('type_id'),
-                    good_id=good.get('id') if isinstance(good, dict) else None,
-                    storage_id=storage.get('id') if isinstance(storage, dict) else None,
+                    good_id=good_id,
+                    good_title=good_title,
+                    storage_id=storage_id,
+                    storage_title=storage_title,
                     amount=t.get('amount'),
                     cost_per_unit=t.get('cost_per_unit'),
                     cost=t.get('cost'),
@@ -1017,8 +1232,10 @@ def sync_goods_transactions(api: YClientsAPI, db, company_id: str,
             else:
                 obj.document_id = t.get('document_id')
                 obj.type_id = t.get('type_id')
-                obj.good_id = good.get('id') if isinstance(good, dict) else None
-                obj.storage_id = storage.get('id') if isinstance(storage, dict) else None
+                obj.good_id = good_id
+                obj.good_title = good_title
+                obj.storage_id = storage_id
+                obj.storage_title = storage_title
                 obj.amount = t.get('amount')
                 obj.cost_per_unit = t.get('cost_per_unit')
                 obj.cost = t.get('cost')
