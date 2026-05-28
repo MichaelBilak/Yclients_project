@@ -238,6 +238,14 @@ def _metric_codes(rows: list[ParsedPlanRow]) -> set[str]:
     return codes
 
 
+def _has_zero_clients_plan(row: ParsedPlanRow) -> bool:
+    return (
+        row.scope == 'staff'
+        and 'clients' in row.values
+        and float(row.values.get('clients') or 0.0) == 0.0
+    )
+
+
 def _scope_count(rows: list[ParsedPlanRow], scope: str) -> int:
     return sum(1 for row in rows if row.scope == scope)
 
@@ -324,7 +332,11 @@ def _effective_import_rows(parsed_rows: list[ParsedPlanRow]) -> list[ParsedPlanR
     for row in parsed_rows:
         if row.scope == 'network' or row.company_id is None:
             continue
-        rows_by_key[(row.period_start, row.period_end, row.company_id, row.staff_id)] = row
+        key = (row.period_start, row.period_end, row.company_id, row.staff_id)
+        if _has_zero_clients_plan(row):
+            rows_by_key.pop(key, None)
+            continue
+        rows_by_key[key] = row
 
     staff_by_branch: dict[tuple[date, date, int], list[ParsedPlanRow]] = {}
     for row in rows_by_key.values():

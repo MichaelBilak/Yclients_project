@@ -1100,6 +1100,7 @@ async def test_plan_fact_excludes_fired_staff(async_session):
     async_session.add(Staff(id=3, name='лист ожидания', position='Барбер', company_id=1, fired=0))
     async_session.add(Staff(id=4, name='No Plan', position='Барбер', company_id=1, fired=0))
     async_session.add(Staff(id=5, name='Zero Plan', position='Барбер', company_id=1, fired=0))
+    async_session.add(Staff(id=6, name='Not Working', position='Барбер', company_id=1, fired=0))
     now = datetime(2025, 1, 1)
     async_session.add_all([
         PlanMetric(
@@ -1119,6 +1120,26 @@ async def test_plan_fact_excludes_fired_staff(async_session):
             staff_id=5,
             staff_category='barber',
             metric_code='revenue',
+            value=0.0,
+            updated_at=now,
+        ),
+        PlanMetric(
+            period_start=date(2025, 1, 1),
+            period_end=date(2025, 1, 31),
+            company_id=1,
+            staff_id=6,
+            staff_category='barber',
+            metric_code='revenue',
+            value=5000.0,
+            updated_at=now,
+        ),
+        PlanMetric(
+            period_start=date(2025, 1, 1),
+            period_end=date(2025, 1, 31),
+            company_id=1,
+            staff_id=6,
+            staff_category='barber',
+            metric_code='clients',
             value=0.0,
             updated_at=now,
         ),
@@ -1691,6 +1712,48 @@ async def test_plan_sheet_csv_imports_flat_staff_rows_and_derives_branch_plan(as
     assert values[(None, 'revenue')] == 10000.0
     assert values[(None, 'clients')] == 10.0
     assert values[(None, 'cosmo_sum')] == 1500.0
+
+
+@pytest.mark.asyncio
+async def test_plan_sheet_csv_excludes_staff_rows_with_zero_client_plan(async_session):
+    async_session.add(Group(id=1, title='G1'))
+    async_session.add(Company(id=1, title='Salon', group_id=1))
+    async_session.add(Staff(id=10, name='Alice', position='Барбер', company_id=1))
+    async_session.add(Staff(id=20, name='Bob', position='Барбер', company_id=1))
+    await async_session.commit()
+
+    result = await import_plan_sheet_csv(
+        async_session,
+        'month,company_id,staff_id,position,выручка,кол-во клиентов,воск\n'
+        '2025-01,1,10,Барбер,8000,4,2\n'
+        '2025-01,1,20,Барбер,9000,3,5\n'
+        '2025-01,1,20,Барбер,9000,0,5\n',
+    )
+
+    assert result['imported'] == 6
+    assert result['diagnostics']['parsed_rows']['staff'] == 3
+    assert result['diagnostics']['effective_rows']['staff'] == 1
+    rows = (
+        await async_session.execute(
+            select(PlanMetric).where(
+                PlanMetric.period_start == date(2025, 1, 1),
+                PlanMetric.period_end == date(2025, 1, 31),
+                PlanMetric.company_id == 1,
+            )
+        )
+    ).scalars().all()
+    values = {
+        (row.staff_id, row.metric_code): row.value
+        for row in rows
+    }
+    assert values == {
+        (10, 'revenue'): 8000.0,
+        (10, 'clients'): 4.0,
+        (10, 'wax_qty'): 2.0,
+        (None, 'revenue'): 8000.0,
+        (None, 'clients'): 4.0,
+        (None, 'wax_qty'): 2.0,
+    }
 
 
 @pytest.mark.asyncio
