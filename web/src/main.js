@@ -53,6 +53,8 @@ const charts = {
 let activeView = 'overview';
 let branchOptions = [];
 
+const ADMIN_HIDDEN_METRIC_CODES = new Set(['revenue', 'avg_check_total']);
+
 function headers() {
   const h = {};
   if (apiKey) h['X-API-Key'] = apiKey;
@@ -553,13 +555,18 @@ function renderPlanSection(title, groups, metrics, meta = '') {
   `;
 }
 
+function metricsForDisplay(category, metrics) {
+  if (category !== 'administrator') return metrics;
+  return metrics.filter((metric) => !ADMIN_HIDDEN_METRIC_CODES.has(metric.code));
+}
+
 function renderStaffCategorySections(prefix, groups, metricSets, metrics) {
   const sections = [];
   const categoryOrder = ['barber', 'administrator', 'unknown'];
   categoryOrder.forEach((category) => {
     const categoryGroups = groups.filter((group) => (group.category || 'unknown') === category);
     if (!categoryGroups.length) return;
-    const categoryMetrics = metricSets[category] || metrics;
+    const categoryMetrics = metricsForDisplay(category, metricSets[category] || metrics);
     const label = categoryGroups[0].category_label || category;
     const title = prefix ? `${prefix} · ${label}` : label;
     sections.push(renderPlanSection(title, categoryGroups, categoryMetrics, `${categoryGroups.length} сотрудников`));

@@ -6,6 +6,7 @@ Silver Stratum Plan Reader.json
 secrets/*.json
 .venv/
 venv/
+.tools/
 __pycache__/
 *.py[cod]
 logs/
