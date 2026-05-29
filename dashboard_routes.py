@@ -136,7 +136,7 @@ async def dashboard_widget_extra_services(
     end_date: date = Query(...),
     company_id: int | None = Query(None),
     staff_id: int | None = Query(None),
-    limit: int = Query(50, ge=1, le=100),
+    limit: int | None = Query(None, ge=1, le=1000),
     db: AsyncSession = Depends(get_async_db),
 ):
     start, end = _parse_range(start_date, end_date)
@@ -177,7 +177,7 @@ async def dashboard_bundle(
     summary = await fetch_summary(db, start, end, company_id, staff_id)
     daily = await fetch_revenue_daily(db, start, end, company_id, staff_id)
     services = await fetch_top_services(db, start, end, company_id, 10, staff_id)
-    extra_services = await fetch_extra_services(db, start, end, company_id, 50, staff_id)
+    extra_services = await fetch_extra_services(db, start, end, company_id, None, staff_id)
     return {
         'success': True,
         'data': {

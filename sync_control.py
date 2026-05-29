@@ -120,11 +120,19 @@ class SyncControlService:
     def get_status_payload(self, db) -> dict[str, Any]:
         running = self.get_running_run(db)
         latest = self.get_latest_run(db)
+        state_values = self.get_state_values(db, ['last_successful_sync_at'])
         return {
             'running': running is not None,
             'current_run': self._serialize_run(running),
             'last_run': self._serialize_run(latest),
+            'last_successful_sync_at': state_values.get('last_successful_sync_at'),
         }
+
+    @staticmethod
+    def get_state_values(db, keys: list[str]) -> dict[str, str | None]:
+        rows = db.query(SyncState).filter(SyncState.key.in_(keys)).all()
+        values = {row.key: row.value for row in rows}
+        return {key: values.get(key) for key in keys}
 
     @staticmethod
     def _serialize_run(run: Optional[SyncRun]) -> Optional[dict[str, Any]]:

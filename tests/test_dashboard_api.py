@@ -341,6 +341,87 @@ async def test_dashboard_top_services_merges_same_service_name_across_branches(a
 
 
 @pytest.mark.asyncio
+async def test_dashboard_bundle_returns_all_extra_services_without_default_limit(async_session):
+    async_session.add(Group(id=1, title='G1'))
+    async_session.add(Company(id=1, title='Salon', group_id=1))
+    async_session.add(Staff(id=1, name='Master', position='Барбер', company_id=1))
+    async_session.add(Client(id=1, name='Client', company_id=1))
+    await async_session.flush()
+    async_session.add(
+        Appointment(
+            id=1,
+            company_id=1,
+            staff_id=1,
+            client_id=1,
+            date=date(2025, 1, 10),
+            datetime=datetime(2025, 1, 10, 12, 0, 0),
+            create_date=datetime(2025, 1, 9, 12, 0, 0),
+            seance_length=3600,
+            attendance=1,
+        )
+    )
+    for index in range(55):
+        service_id = 1000 + index
+        async_session.add(Service(id=service_id, title=f'Extra {index}', category_title='Уход', company_id=1))
+        async_session.add(
+            ServiceLabel(
+                service_id=service_id,
+                company_id=1,
+                is_extra=True,
+                source='test',
+                updated_at=datetime(2025, 1, 1, 0, 0, 0),
+            )
+        )
+        async_session.add(
+            Transaction(
+                id=index + 1,
+                appointment_id=1,
+                service_id=service_id,
+                service_title=f'Extra {index}',
+                cost=100.0 + index,
+                first_cost=100.0 + index,
+                amount=1,
+                company_id=1,
+            )
+        )
+        async_session.add(
+            FinancialTransaction(
+                id=index + 1,
+                date=datetime(2025, 1, 10, 12, 0, 0),
+                amount=100.0 + index,
+                record_id=1,
+                visit_id=1,
+                sold_item_id=service_id,
+                sold_item_type='service',
+                master_id=1,
+                company_id=1,
+            )
+        )
+    await async_session.commit()
+
+    async def override_db():
+        yield async_session
+
+    app.dependency_overrides[api.get_async_db] = override_db
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url='http://test') as client:
+        bundle = await client.get(
+            '/dashboard/bundle',
+            params={'start_date': '2025-01-01', 'end_date': '2025-01-31'},
+        )
+        limited = await client.get(
+            '/dashboard/widget/extra_services',
+            params={'start_date': '2025-01-01', 'end_date': '2025-01-31', 'limit': 10},
+        )
+    app.dependency_overrides.clear()
+
+    assert bundle.status_code == 200
+    assert len(bundle.json()['data']['extra_services']) == 55
+    assert limited.status_code == 200
+    assert len(limited.json()['data']) == 10
+
+
+@pytest.mark.asyncio
 async def test_extra_service_labels_are_scoped_to_branch_in_calculations(async_session):
     async_session.add(Group(id=1, title='G1'))
     async_session.add(Company(id=1, title='Salon 1', group_id=1))
@@ -853,6 +934,13 @@ async def test_dashboard_plan_fact_uses_plan_and_fact_formulas(async_session):
     assert selected_staff_data['branch']['title'] == 'Salon'
     assert selected_staff_data['selected_staff']['name'] == 'Master'
     assert [group['title'] for group in selected_staff_data['groups']] == ['Master']
+    assert selected_staff_data['selected_staff_plan']['title'] == 'Master'
+    selected_plan_rows = {
+        row['code']: row['plan']
+        for row in selected_staff_data['selected_staff_plan']['metrics']
+    }
+    assert selected_plan_rows['revenue'] == 7000.0
+    assert selected_plan_rows['clients'] == 2.0
 
     assert r_partial.status_code == 200
     partial_data = r_partial.json()['data']
@@ -1090,6 +1178,172 @@ async def test_admin_fact_revenue_uses_created_records_and_goods_cost(async_sess
     assert admin_cells['clients']['fact'] == 1.0
     assert admin_cells['cosmo_qty']['fact'] == 2.0
     assert admin_cells['cosmo_sum']['fact'] == 300.0
+
+
+@pytest.mark.asyncio
+async def test_plan_fact_admin_barber_clients_check_passes_when_creators_match(async_session):
+    async_session.add(Group(id=1, title='G1'))
+    async_session.add(Company(id=1, title='Salon', group_id=1))
+    async_session.add(Staff(id=1, name='Barber', position='Барбер', company_id=1))
+    async_session.add(Staff(id=2, name='Admin', position='Администратор', company_id=1, user_id=500))
+    async_session.add(Client(id=1, name='C1', company_id=1))
+    async_session.add(Client(id=2, name='C2', company_id=1))
+    await async_session.flush()
+
+    async_session.add_all([
+        Appointment(
+            id=1,
+            company_id=1,
+            staff_id=1,
+            client_id=1,
+            date=date(2025, 1, 10),
+            datetime=datetime(2025, 1, 10, 12, 0, 0),
+            create_date=datetime(2025, 1, 5, 12, 0, 0),
+            seance_length=3600,
+            attendance=1,
+            created_user_id=500,
+        ),
+        Appointment(
+            id=2,
+            company_id=1,
+            staff_id=1,
+            client_id=2,
+            date=date(2025, 1, 11),
+            datetime=datetime(2025, 1, 11, 12, 0, 0),
+            create_date=datetime(2025, 1, 5, 12, 0, 0),
+            seance_length=3600,
+            attendance=1,
+            created_user_id=500,
+        ),
+    ])
+    now = datetime(2025, 1, 1)
+    async_session.add_all([
+        PlanMetric(
+            period_start=date(2025, 1, 1),
+            period_end=date(2025, 1, 31),
+            company_id=1,
+            staff_id=1,
+            staff_category='barber',
+            metric_code='clients',
+            value=2.0,
+            updated_at=now,
+        ),
+        PlanMetric(
+            period_start=date(2025, 1, 1),
+            period_end=date(2025, 1, 31),
+            company_id=1,
+            staff_id=2,
+            staff_category='administrator',
+            metric_code='clients',
+            value=2.0,
+            updated_at=now,
+        ),
+    ])
+    await async_session.commit()
+
+    async def override_db():
+        yield async_session
+
+    app.dependency_overrides[api.get_async_db] = override_db
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url='http://test') as client:
+        r = await client.get(
+            '/dashboard/widget/plan_fact',
+            params={'start_date': '2025-01-01', 'end_date': '2025-01-31', 'company_id': 1},
+        )
+    app.dependency_overrides.clear()
+
+    assert r.status_code == 200
+    data = r.json()['data']
+    assert data['diagnostics'] == []
+    groups = data['groups']
+    admin_group = next(g for g in groups if g['category'] == 'administrator')
+    barber_group = next(g for g in groups if g['category'] == 'barber')
+    admin_cells = {cell['code']: cell for cell in admin_group['metrics']}
+    barber_cells = {cell['code']: cell for cell in barber_group['metrics']}
+    assert admin_cells['clients']['fact'] == barber_cells['clients']['fact'] == 2.0
+
+
+@pytest.mark.asyncio
+async def test_plan_fact_reports_admin_barber_clients_mismatch_diagnostics(async_session):
+    async_session.add(Group(id=1, title='G1'))
+    async_session.add(Company(id=1, title='Salon', group_id=1))
+    async_session.add(Staff(id=1, name='Barber', position='Барбер', company_id=1))
+    async_session.add(Staff(id=2, name='Admin', position='Администратор', company_id=1, user_id=500))
+    async_session.add(Client(id=1, name='C1', company_id=1))
+    async_session.add(Client(id=2, name='C2', company_id=1))
+    await async_session.flush()
+
+    async_session.add_all([
+        Appointment(
+            id=1,
+            company_id=1,
+            staff_id=1,
+            client_id=1,
+            date=date(2025, 1, 10),
+            datetime=datetime(2025, 1, 10, 12, 0, 0),
+            create_date=datetime(2025, 1, 5, 12, 0, 0),
+            seance_length=3600,
+            attendance=1,
+            created_user_id=500,
+        ),
+        Appointment(
+            id=2,
+            company_id=1,
+            staff_id=1,
+            client_id=2,
+            date=date(2025, 1, 11),
+            datetime=datetime(2025, 1, 11, 12, 0, 0),
+            create_date=datetime(2025, 1, 5, 12, 0, 0),
+            seance_length=3600,
+            attendance=1,
+            created_user_id=999,
+        ),
+    ])
+    now = datetime(2025, 1, 1)
+    async_session.add_all([
+        PlanMetric(
+            period_start=date(2025, 1, 1),
+            period_end=date(2025, 1, 31),
+            company_id=1,
+            staff_id=1,
+            staff_category='barber',
+            metric_code='clients',
+            value=2.0,
+            updated_at=now,
+        ),
+        PlanMetric(
+            period_start=date(2025, 1, 1),
+            period_end=date(2025, 1, 31),
+            company_id=1,
+            staff_id=2,
+            staff_category='administrator',
+            metric_code='clients',
+            value=2.0,
+            updated_at=now,
+        ),
+    ])
+    await async_session.commit()
+
+    async def override_db():
+        yield async_session
+
+    app.dependency_overrides[api.get_async_db] = override_db
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url='http://test') as client:
+        r = await client.get(
+            '/dashboard/widget/plan_fact',
+            params={'start_date': '2025-01-01', 'end_date': '2025-01-31', 'company_id': 1},
+        )
+    app.dependency_overrides.clear()
+
+    assert r.status_code == 200
+    diagnostics = r.json()['data']['diagnostics']
+    assert [item['code'] for item in diagnostics] == ['admin_barber_clients_mismatch']
+    assert diagnostics[0]['barber_clients_fact'] == 2.0
+    assert diagnostics[0]['administrator_clients_fact'] == 1.0
+    assert diagnostics[0]['unassigned_records_count'] == 1
+    assert diagnostics[0]['sample_record_ids'] == [2]
 
 
 @pytest.mark.asyncio
@@ -1618,8 +1872,8 @@ async def test_plan_sheet_config_import_falls_back_to_service_account(async_sess
 
     result = await plan_import.import_plan_sheet_from_config(async_session)
 
-    # staff row (3 metrics) + derived branch plan (3 metrics)
-    assert result['imported'] == 6
+    # staff row (3 metrics) + derived branch plan (3 summed metrics + avg check)
+    assert result['imported'] == 7
     rows = (
         await async_session.execute(
             select(PlanMetric).where(
@@ -1674,7 +1928,7 @@ async def test_plan_sheet_config_import_prefers_named_service_account_sheet(asyn
     result = await plan_import.import_plan_sheet_from_config(async_session)
 
     assert csv_called is False
-    assert result['imported'] == 6
+    assert result['imported'] == 7
     assert result['diagnostics']['parsed_rows']['staff'] == 1
     assert result['warnings'] == []
 
@@ -1693,7 +1947,7 @@ async def test_plan_sheet_csv_imports_staff_rows_and_validates_branch_totals(asy
         '2025-01,,10,Барбер,8000,4,2\n',
     )
 
-    assert result['imported'] == 6
+    assert result['imported'] == 7
     assert any('branch staff total' in warning for warning in result['warnings'])
     rows = (
         await async_session.execute(
@@ -1720,7 +1974,12 @@ async def test_plan_sheet_csv_imports_staff_rows_and_validates_branch_totals(asy
         )
     ).scalars().all()
     branch_values = {row.metric_code: row.value for row in branch_rows}
-    assert branch_values == {'revenue': 8000.0, 'clients': 4.0, 'wax_qty': 2.0}
+    assert branch_values == {
+        'revenue': 8000.0,
+        'clients': 4.0,
+        'wax_qty': 2.0,
+        'avg_check_total': 2000.0,
+    }
 
 
 @pytest.mark.asyncio
@@ -1750,7 +2009,7 @@ async def test_plan_sheet_csv_imports_flat_staff_rows_and_derives_branch_plan(as
         '2025-01,1,Salon,20,Admin,Администратор,3000,,3,,,,,4,500,2\n',
     )
 
-    assert result['imported'] == 16
+    assert result['imported'] == 17
     assert result['warnings'] == []
 
     rows = (
@@ -1774,6 +2033,41 @@ async def test_plan_sheet_csv_imports_flat_staff_rows_and_derives_branch_plan(as
     assert values[(None, 'revenue')] == 10000.0
     assert values[(None, 'clients')] == 10.0
     assert values[(None, 'cosmo_sum')] == 1500.0
+    assert values[(None, 'avg_check_total')] == 1000.0
+
+
+@pytest.mark.asyncio
+async def test_plan_sheet_csv_branch_avg_check_averages_barber_avg_checks(async_session):
+    async_session.add(Group(id=1, title='G1'))
+    async_session.add(Company(id=1, title='Salon', group_id=1))
+    async_session.add(Staff(id=10, name='Alice', position='Барбер', company_id=1))
+    async_session.add(Staff(id=11, name='Bob', position='Барбер', company_id=1))
+    async_session.add(Staff(id=20, name='Admin', position='Администратор', company_id=1))
+    await async_session.commit()
+
+    result = await import_plan_sheet_csv(
+        async_session,
+        'month,company_id,staff_id,position,Выручка,СЧ общий,Кол-во клиентов\n'
+        '2025-01,1,10,Барбер,4000,1000,4\n'
+        '2025-01,1,11,Барбер,9000,,3\n'
+        '2025-01,1,20,Администратор,10000,10000,1\n',
+    )
+
+    assert result['warnings'] == []
+    rows = (
+        await async_session.execute(
+            select(PlanMetric).where(
+                PlanMetric.period_start == date(2025, 1, 1),
+                PlanMetric.period_end == date(2025, 1, 31),
+                PlanMetric.company_id == 1,
+                PlanMetric.staff_id.is_(None),
+            )
+        )
+    ).scalars().all()
+    branch_values = {row.metric_code: row.value for row in rows}
+    assert branch_values['revenue'] == 23000.0
+    assert branch_values['clients'] == 8.0
+    assert branch_values['avg_check_total'] == 2000.0
 
 
 @pytest.mark.asyncio
@@ -1794,7 +2088,7 @@ async def test_plan_sheet_csv_excludes_staff_rows_with_zero_client_plan(async_se
         '2025-01,1,30,Барбер,0,,0\n',
     )
 
-    assert result['imported'] == 6
+    assert result['imported'] == 7
     assert result['diagnostics']['parsed_rows']['staff'] == 4
     assert result['diagnostics']['effective_rows']['staff'] == 1
     rows = (
@@ -1817,6 +2111,7 @@ async def test_plan_sheet_csv_excludes_staff_rows_with_zero_client_plan(async_se
         (None, 'revenue'): 8000.0,
         (None, 'clients'): 4.0,
         (None, 'wax_qty'): 2.0,
+        (None, 'avg_check_total'): 2000.0,
     }
 
 
@@ -1854,7 +2149,7 @@ async def test_plan_sheet_csv_replaces_duplicate_staff_month_with_latest_row(asy
         '2025-01,1,10,Барбер,9000,3,\n',
     )
 
-    assert result['imported'] == 4
+    assert result['imported'] == 5
     rows = (
         await async_session.execute(
             select(PlanMetric).where(
@@ -1873,6 +2168,7 @@ async def test_plan_sheet_csv_replaces_duplicate_staff_month_with_latest_row(asy
         (10, 'clients'): 3.0,
         (None, 'revenue'): 9000.0,
         (None, 'clients'): 3.0,
+        (None, 'avg_check_total'): 3000.0,
     }
 
     plan_fact = await fetch_plan_fact(async_session, date(2025, 1, 1), date(2025, 1, 31), company_id=1)

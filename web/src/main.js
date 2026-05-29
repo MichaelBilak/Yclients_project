@@ -110,12 +110,13 @@ function formatMetricValue(value, format) {
   return formatNumber(value);
 }
 
-function formatLocalDateTime(value) {
+function formatMoscowDateTime(value) {
   if (!value) return null;
   const isoValue = /(?:Z|[+-]\d{2}:\d{2})$/.test(value) ? value : `${value}Z`;
   const date = new Date(isoValue);
   if (Number.isNaN(date.getTime())) return value;
   return new Intl.DateTimeFormat('ru-RU', {
+    timeZone: 'Europe/Moscow',
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
@@ -314,9 +315,9 @@ function renderVisitMetrics(summary) {
       deltaValue: visitMetrics.visits_per_client_change_pct,
     },
     {
-      label: 'Клиенты с доп. услугами',
+      label: 'Уникальные клиенты с доп. услугами',
       value: formatMetricValue(visitMetrics.extra_service_clients_pct, 'percent'),
-      delta: `${formatNumber(visitMetrics.extra_service_clients)} клиентов`,
+      delta: `${formatNumber(visitMetrics.extra_service_clients)} уник. клиентов`,
       deltaValue: null,
     },
   ];
@@ -465,6 +466,7 @@ function renderExtraServicesTable(services) {
   }
 
   els.extraServicesTable.innerHTML = `
+    <div class="table-box-scroll extra-services-scroll">
     <table>
       <thead>
         <tr>
@@ -489,6 +491,7 @@ function renderExtraServicesTable(services) {
           .join('')}
       </tbody>
     </table>
+    </div>
   `;
 }
 
@@ -574,11 +577,69 @@ function renderStaffCategorySections(prefix, groups, metricSets, metrics) {
   return sections;
 }
 
+function renderSelectedStaffPlanTable(staffPlan) {
+  if (!staffPlan?.metrics?.length) return '';
+  return `
+    <section class="plan-section selected-staff-plan">
+      <div class="plan-section-title">
+        <h3>План сотрудника: ${escapeHtml(staffPlan.title || 'сотрудник')}</h3>
+        <span class="meta">${escapeHtml(staffPlan.category_label || '')}</span>
+      </div>
+      <div class="table-scroll staff-plan-scroll">
+        <table class="staff-plan-table">
+          <thead>
+            <tr>
+              <th>KPI</th>
+              <th class="number">План</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${staffPlan.metrics
+              .map(
+                (metric) => `
+                  <tr>
+                    <td>${escapeHtml(metric.label)}</td>
+                    <td class="number">${escapeHtml(formatMetricValue(metric.plan, metric.format))}</td>
+                  </tr>
+                `,
+              )
+              .join('')}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function renderPlanDiagnostics(diagnostics) {
+  if (!diagnostics?.length) return '';
+  return `
+    <div class="plan-diagnostics">
+      ${diagnostics
+        .map((item) => {
+          const details = [
+            `барберы: ${formatNumber(item.barber_clients_fact)}`,
+            `администраторы: ${formatNumber(item.administrator_clients_fact)}`,
+            `записей без корректного администратора: ${formatNumber(item.unassigned_records_count)}`,
+          ];
+          return `
+            <div class="diagnostic warning">
+              <strong>${escapeHtml(item.message || 'Проверка данных')}</strong>
+              <span>${escapeHtml(details.join(' · '))}</span>
+            </div>
+          `;
+        })
+        .join('')}
+    </div>
+  `;
+}
+
 function renderPlanFact(planFact) {
   const groups = planFact?.groups || [];
   const metrics = planFact?.metrics || [];
+  const diagnosticsHtml = renderPlanDiagnostics(planFact?.diagnostics || []);
   if (!groups.length && !planFact?.parent_group) {
-    els.planFactTable.innerHTML = '<div class="empty">Нет плана за выбранный период</div>';
+    els.planFactTable.innerHTML = `${diagnosticsHtml}<div class="empty">Нет плана за выбранный период</div>`;
     els.planMeta.textContent = '';
     return;
   }
@@ -586,6 +647,10 @@ function renderPlanFact(planFact) {
   const metricSets = planFact?.metric_sets || {};
   if (planFact?.view_scope === 'staff') {
     const sections = [];
+    if (planFact.selected_staff_plan) {
+      sections.push(renderSelectedStaffPlanTable(planFact.selected_staff_plan));
+    }
+
     if (planFact.parent_group) {
       const branchTitle = planFact.branch?.title || planFact.parent_group.title || 'Филиал';
       sections.push(renderPlanSection(branchTitle, [planFact.parent_group], metricSets.branch || metrics));
@@ -593,9 +658,11 @@ function renderPlanFact(planFact) {
 
     sections.push(...renderStaffCategorySections('', groups, metricSets, metrics));
 
-    els.planFactTable.innerHTML = sections.join('') || '<div class="empty">Нет сотрудников для выбранного филиала</div>';
+    els.planFactTable.innerHTML = diagnosticsHtml + (
+      sections.join('') || '<div class="empty">Нет сотрудников для выбранного филиала</div>'
+    );
   } else {
-    els.planFactTable.innerHTML = renderPlanTable(groups, metrics);
+    els.planFactTable.innerHTML = diagnosticsHtml + renderPlanTable(groups, metrics);
   }
 
   const planPeriod = planFact?.plan_period;
@@ -691,15 +758,15 @@ function setFilterLoading(filter, isLoading) {
 async function loadSyncStatus() {
   try {
     const payload = await fetchJson('/dashboard/widget/sync_status');
-    const lastRun = payload.data?.sync?.last_run;
-    const queue = payload.data?.queue;
-    const parts = [];
-    if (lastRun?.status) parts.push(`последний запуск: ${lastRun.status}`);
-    if (lastRun?.finished_at) parts.push(formatLocalDateTime(lastRun.finished_at));
-    if (queue) parts.push(`очередь: ${queue.queued_jobs}, running: ${queue.running_jobs}`);
-    els.syncState.textContent = parts.length ? `Синхронизация: ${parts.join(' · ')}` : 'Синхронизация: нет запусков';
+    const sync = payload.data?.sync || {};
+    const lastRun = sync.last_run;
+    const lastSuccessfulAt = sync.last_successful_sync_at
+      || (lastRun?.status === 'success' ? lastRun.finished_at : null);
+    els.syncState.textContent = lastSuccessfulAt
+      ? `данные актуальны на ${formatMoscowDateTime(lastSuccessfulAt)}`
+      : 'данные актуальны: нет успешных обновлений';
   } catch {
-    els.syncState.textContent = 'Синхронизация: статус недоступен';
+    els.syncState.textContent = 'данные актуальны: статус недоступен';
   }
 }
 

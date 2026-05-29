@@ -745,7 +745,7 @@ async def fetch_extra_services(
     start: date,
     end: date,
     company_id: Optional[int] = None,
-    limit: int = 50,
+    limit: Optional[int] = None,
     staff_id: Optional[int] = None,
 ) -> list[dict[str, Any]]:
     title_expr = func.trim(func.coalesce(func.nullif(Transaction.service_title, ''), ServiceCatalog.title, ''))
@@ -822,7 +822,7 @@ async def fetch_extra_services(
         for r in count_rows
     ]
     rows.sort(key=lambda item: (item['sold'], item['revenue']), reverse=True)
-    return rows[:limit]
+    return rows[:limit] if limit is not None else rows
 
 
 async def _service_group_counts(
@@ -1149,6 +1149,122 @@ def _metric_sets_payload() -> dict[str, list[dict[str, str]]]:
     }
 
 
+def _metric_fact_value(group: dict[str, Any], code: str) -> float:
+    for cell in group.get('metrics') or []:
+        if cell.get('code') == code:
+            return float(cell.get('fact') or 0.0)
+    return 0.0
+
+
+def _selected_staff_plan_payload(
+    selected_staff: dict[str, Any] | None,
+    groups: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    if not selected_staff:
+        return None
+    staff_id = int(selected_staff['id'])
+    group = next((item for item in groups if item.get('staff_id') == staff_id), None)
+    if group is None:
+        return None
+    cells_by_code = {cell['code']: cell for cell in group.get('metrics') or []}
+    metrics = []
+    for metric in metrics_for_category(group.get('category')):
+        cell = cells_by_code.get(metric['code'], {})
+        metrics.append({
+            'code': metric['code'],
+            'label': metric['label'],
+            'format': metric['format'],
+            'plan': cell.get('plan'),
+        })
+    return {
+        'company_id': group.get('company_id'),
+        'staff_id': staff_id,
+        'title': group.get('title') or selected_staff.get('name'),
+        'position': group.get('position') or selected_staff.get('position'),
+        'category': group.get('category'),
+        'category_label': group.get('category_label'),
+        'metrics': metrics,
+    }
+
+
+async def _client_fact_diagnostics(
+    db: AsyncSession,
+    start: date,
+    end: date,
+    branch_id: int,
+    groups: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    barber_groups = [group for group in groups if group.get('category') == 'barber']
+    admin_groups = [group for group in groups if group.get('category') == 'administrator']
+    if not barber_groups or not admin_groups:
+        return []
+
+    barber_clients = sum(_metric_fact_value(group, 'clients') for group in barber_groups)
+    admin_clients = sum(_metric_fact_value(group, 'clients') for group in admin_groups)
+    if abs(barber_clients - admin_clients) <= 0.01:
+        return []
+
+    admin_staff_ids = [int(group['staff_id']) for group in admin_groups if group.get('staff_id') is not None]
+    staff_rows = (
+        await db.execute(
+            select(Staff.id, Staff.user_id)
+            .where(
+                Staff.company_id == branch_id,
+                Staff.id.in_(admin_staff_ids),
+                Staff.fired == 0,
+            )
+        )
+    ).all()
+    valid_admin_user_ids = {
+        int(row.user_id)
+        for row in staff_rows
+        if row.user_id is not None
+    }
+    missing_user_staff_ids = [
+        int(row.id)
+        for row in staff_rows
+        if row.user_id is None
+    ]
+
+    unassigned_filters = [_appt_revenue_filters(start, end, branch_id)]
+    if valid_admin_user_ids:
+        unassigned_filters.append(
+            or_(
+                Appointment.created_user_id.is_(None),
+                ~Appointment.created_user_id.in_(valid_admin_user_ids),
+            )
+        )
+
+    unassigned_count = await db.scalar(
+        select(func.count(func.distinct(Appointment.id)))
+        .select_from(Appointment)
+        .where(*unassigned_filters)
+    )
+    sample_rows = (
+        await db.execute(
+            select(Appointment.id)
+            .where(*unassigned_filters)
+            .order_by(Appointment.date.asc(), Appointment.id.asc())
+            .limit(20)
+        )
+    ).all()
+
+    return [{
+        'code': 'admin_barber_clients_mismatch',
+        'severity': 'warning',
+        'message': (
+            'Сумма клиентов в факте у администраторов не равна сумме клиентов '
+            'в факте у барберов'
+        ),
+        'company_id': branch_id,
+        'barber_clients_fact': _round_optional(barber_clients),
+        'administrator_clients_fact': _round_optional(admin_clients),
+        'unassigned_records_count': int(unassigned_count or 0),
+        'sample_record_ids': [int(row.id) for row in sample_rows],
+        'administrator_staff_without_user_id': missing_user_staff_ids,
+    }]
+
+
 def _staff_category(staff_row: Any, plan_category: str | None, plan_values: dict[str, float] | None = None) -> str:
     if plan_category in STAFF_CATEGORY_METRIC_CODES:
         return plan_category
@@ -1338,8 +1454,10 @@ async def fetch_plan_fact(
                 'plan_period': {'start': plan_start.isoformat(), 'end': plan_end.isoformat()},
                 'view_scope': 'staff',
                 'selected_staff': selected_staff,
+                'selected_staff_plan': None,
                 'metrics': list(PLAN_FACT_METRICS),
                 'metric_sets': _metric_sets_payload(),
+                'diagnostics': [],
                 'groups': [],
             }
 
@@ -1362,6 +1480,8 @@ async def fetch_plan_fact(
             staff_id,
             include_all_when_branch_planned=_has_plan_values(plans_by_company.get(branch_id, {})),
         )
+        selected_staff_plan = _selected_staff_plan_payload(selected_staff, groups)
+        diagnostics = await _client_fact_diagnostics(db, start, end, branch_id, groups)
 
         return {
             'period': {'start': start.isoformat(), 'end': end.isoformat()},
@@ -1369,9 +1489,11 @@ async def fetch_plan_fact(
             'view_scope': 'staff',
             'branch': branch,
             'selected_staff': selected_staff,
+            'selected_staff_plan': selected_staff_plan,
             'parent_group': parent_group,
             'metrics': list(PLAN_FACT_METRICS),
             'metric_sets': _metric_sets_payload(),
+            'diagnostics': diagnostics,
             'groups': groups,
         }
 
@@ -1408,6 +1530,7 @@ async def fetch_plan_fact(
         'view_scope': 'branch',
         'metrics': list(PLAN_FACT_METRICS),
         'metric_sets': _metric_sets_payload(),
+        'diagnostics': [],
         'groups': groups,
     }
 

@@ -231,6 +231,31 @@ def _sum_values(rows: list[ParsedPlanRow]) -> dict[str, float]:
     return values
 
 
+def _barber_avg_check_value(row: ParsedPlanRow) -> float | None:
+    if row.staff_category != 'barber':
+        return None
+    if 'avg_check_total' in row.values:
+        return float(row.values['avg_check_total'] or 0.0)
+    clients = float(row.values.get('clients') or 0.0)
+    if not clients or 'revenue' not in row.values:
+        return None
+    return float(row.values.get('revenue') or 0.0) / clients
+
+
+def _branch_values_from_staff(rows: list[ParsedPlanRow]) -> tuple[dict[str, float], set[str]]:
+    values = _sum_values(rows)
+    metric_codes = _metric_codes(rows) & RAW_PLAN_FACT_CODES
+    barber_avg_checks = [
+        value
+        for row in rows
+        if (value := _barber_avg_check_value(row)) is not None
+    ]
+    if barber_avg_checks:
+        values['avg_check_total'] = sum(barber_avg_checks) / len(barber_avg_checks)
+        metric_codes.add('avg_check_total')
+    return values, metric_codes
+
+
 def _metric_codes(rows: list[ParsedPlanRow]) -> set[str]:
     codes: set[str] = set()
     for row in rows:
@@ -356,8 +381,7 @@ def _effective_import_rows(parsed_rows: list[ParsedPlanRow]) -> list[ParsedPlanR
 
     for key, rows in staff_by_branch.items():
         period_start, period_end, company_id = key
-        metric_codes = _metric_codes(rows) & RAW_PLAN_FACT_CODES
-        values = _sum_values(rows)
+        values, metric_codes = _branch_values_from_staff(rows)
         if not values:
             continue
         rows_by_key[(period_start, period_end, company_id, None)] = ParsedPlanRow(
