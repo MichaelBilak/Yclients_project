@@ -24,6 +24,10 @@ case "$command" in
     shift
     exec python setup_analytics.py "$@"
     ;;
+  import-sheets)
+    shift
+    exec python import_sheets.py "$@"
+    ;;
   shell)
     shift
     exec sh "$@"

@@ -310,6 +310,21 @@
       white-space: nowrap;
     }
 
+    .plan-table th.number {
+      white-space: normal;
+      word-break: break-word;
+      min-width: 48px;
+    }
+
+    .plan-table [data-metric="clients"],
+    .plan-table [data-metric="face_care_qty"],
+    .plan-table [data-metric="head_care_qty"],
+    .plan-table [data-metric="cosmo_sum"],
+    .plan-table [data-metric="extra_services_pct"] {
+      width: 52px;
+      min-width: 52px;
+    }
+
     .table-scroll {
       overflow-x: auto;
       border: 1px solid #e2e8f0;
@@ -317,7 +332,7 @@
     }
 
     .table-scroll table {
-      min-width: 1180px;
+      min-width: 950px;
     }
 
     .plan-table th,

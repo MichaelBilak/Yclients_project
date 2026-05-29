@@ -63,6 +63,7 @@ jobs:
       VM_USER: ${{ secrets.VM_USER }}
       VM_SSH_KEY: ${{ secrets.VM_SSH_KEY }}
       VM_SSH_PORT: ${{ secrets.VM_SSH_PORT || '22' }}
+      VM_PROJECT_DIR: ${{ secrets.VM_PROJECT_DIR || '/opt/yclients_bi_system' }}
     steps:
       - name: Skip deploy when VM secrets are missing
         if: env.VM_HOST == '' || env.VM_USER == '' || env.VM_SSH_KEY == ''
@@ -87,3 +88,17 @@ jobs:
           ssh -i ~/.ssh/vm_deploy_key -p "$VM_SSH_PORT" "$VM_USER@$VM_HOST" \
             'sudo journalctl -u yclients-auto-deploy.service -n 120 --no-pager'
           exit "$deploy_status"
+
+      - name: Post-deploy incremental sync
+        if: env.VM_HOST != '' && env.VM_USER != '' && env.VM_SSH_KEY != '' && env.VM_PROJECT_DIR != ''
+        continue-on-error: true
+        run: |
+          ssh -i ~/.ssh/vm_deploy_key -p "$VM_SSH_PORT" "$VM_USER@$VM_HOST" \
+            "cd \"$VM_PROJECT_DIR\" && docker compose --profile tools run --rm sync"
+
+      - name: Post-deploy Google Sheets import
+        if: env.VM_HOST != '' && env.VM_USER != '' && env.VM_SSH_KEY != '' && env.VM_PROJECT_DIR != ''
+        continue-on-error: true
+        run: |
+          ssh -i ~/.ssh/vm_deploy_key -p "$VM_SSH_PORT" "$VM_USER@$VM_HOST" \
+            "cd \"$VM_PROJECT_DIR\" && docker compose --profile tools run --rm import-sheets"

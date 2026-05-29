@@ -69,6 +69,13 @@ services:
     command: []
     restart: "no"
 
+  import-sheets:
+    <<: *app-base
+    profiles: ["tools"]
+    entrypoint: ["/app/docker/entrypoint.sh", "import-sheets"]
+    command: []
+    restart: "no"
+
   metabase:
     image: metabase/metabase:latest
     ports:

@@ -505,7 +505,7 @@ function renderPlanTable(groups, metrics) {
           <tr>
             <th>Разрез</th>
             <th>Показатель</th>
-            ${metrics.map((metric) => `<th class="number">${escapeHtml(metric.label)}</th>`).join('')}
+            ${metrics.map((metric) => `<th class="number" data-metric="${escapeHtml(metric.code)}">${escapeHtml(metric.label)}</th>`).join('')}
           </tr>
         </thead>
         <tbody>
@@ -526,7 +526,7 @@ function renderPlanTable(groups, metrics) {
                         const cell = cellsByCode[metric.code] || {};
                         const format = field === 'completion_pct' ? 'percent' : metric.format;
                         const statusClass = field === 'completion_pct' ? ` metric-status ${cell.status || 'no-plan'}` : '';
-                        return `<td class="number${statusClass}">${escapeHtml(formatMetricValue(cell[field], format))}</td>`;
+                        return `<td class="number${statusClass}" data-metric="${escapeHtml(metric.code)}">${escapeHtml(formatMetricValue(cell[field], format))}</td>`;
                       })
                       .join('')}
                   </tr>
