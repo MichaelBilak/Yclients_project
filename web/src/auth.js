@@ -1,4 +1,12 @@
 const TOKEN_KEY = 'portal_access_token';
+const apiBase = import.meta.env.VITE_API_BASE || '';
+
+export function resolveApiPath(path) {
+  if (!apiBase) {
+    return path;
+  }
+  return `${apiBase.replace(/\/$/, '')}${path}`;
+}
 
 export function getToken() {
   return localStorage.getItem(TOKEN_KEY) || '';
@@ -22,7 +30,7 @@ export function authHeaders(extra = {}) {
 }
 
 export async function authFetch(path, options = {}) {
-  const response = await fetch(path, {
+  const response = await fetch(resolveApiPath(path), {
     ...options,
     headers: {
       'Content-Type': 'application/json',
